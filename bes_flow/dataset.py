@@ -1,25 +1,12 @@
 # bes_flow/dataset.py
 #
 # Dataset class and DataLoader factory for BES optical flow training.
-#
-# Background
-# ─────────────────────────────────
-# The network needs PAIRS of frames (frameA, frameB) to learn from, along
-# with the ground-truth displacement that maps one onto the other.
-#
-# We don't have ground-truth labels for real BES data. Instead, we generate
-# synthetic training pairs from real frames by applying a KNOWN sub-pixel
-# shift: take one real BES frame, shift it by a random (dx, dy), and treat
-# the pair (original, shifted) as a training example with known displacement.
-#
-# PyTorch data pipeline
-# ──────────────────────
+# 
 #   BESDataset   — a PyTorch Dataset: defines __len__ and __getitem__.
-#                  __getitem__(i) returns one (frameA, frameB, flow_gt) triple.
+#                  __getitem__(i) returns (frameA, frameB, flow_gt).
 #
 #   DataLoader   — wraps the Dataset and handles batching + shuffling.
-#                  The training loop calls `for batch in dataloader` and
-#                  receives tensors of shape (B, 1, 64, 64) automatically.
+
 
 import os
 import h5py
@@ -126,9 +113,7 @@ def zonal_plus_turbulence_flow(H, W,
                                well_width=0.125,):
     """
     Generate a velocity field composed of:
-        1. A zonal flow component: smooth, predominantly in the y
-           direction, with a slow variation across the image — mimics the
-           ExB mean flow seen in tokamak edge plasmas.
+        1. A smooth zonal flow component with a slow variation across the image
         2. A turbulent component: small-scale, isotropic Gaussian random
            field superimposed on the zonal flow.
 
@@ -138,7 +123,7 @@ def zonal_plus_turbulence_flow(H, W,
     zonal_amplitude        : peak zonal flow displacement in pixels
     turbulence_amplitude   : peak turbulent displacement in pixels
     turbulence_sigma       : spatial smoothing of turbulent component (pixels)
-    profile_type           : type of the flow profile
+    profile_type           : type of the flow profile in the x-direction
                              'well' is a gaussian profile resembling Er well,
                              'sin' is a sinusoidal profile
     well_pos               : well_pos * W is the position of the peak flow along the x axis (for 'well')
@@ -202,7 +187,6 @@ def warp_image(image, flow):
     ----------
     image : (H, W) float32 array — the BES frame to warp
     flow  : (2, H, W) float32 array — displacement field
-                channel 0 = dx (horizontal), channel 1 = dy (vertical)
 
     Returns
     -------
@@ -513,15 +497,12 @@ class BESDataset(Dataset):
         Random data augmentations.
 
         1. Y-axis flip (p=0.5)
-           dy -> -dy; dx unchanged.
-
+        2. X-axis flip
         2. Random 90° rotation (k ∈ {0,1,2,3})
            Image and flow grid are rotated k*90° CCW.
            Flow vectors are rotated by applying (dx,dy)->(dy,-dx) k times
-           (x and y increase from elemen (0,0)).
-
-        3. Intensity jitter — same gain U[0.95,1.05] for both frames,
-           preserving their relative photometric relationship.
+           (x and y increase from element (0,0)).
+        3. Intensity jitter — same gain U[0.95,1.05] for both frames
         """
         # 1. Y-axis flip
         if torch.rand(1).item() < 0.5:
@@ -561,9 +542,9 @@ def make_datasets(train_frames, val_frames, test_frames, cfg):
     Cache behaviour
     ───────────────
     If cfg.dataset_cache_path is set and a valid cache exists on disk,
-    all three splits are loaded from it instantly.  Otherwise they are
-    generated from scratch and saved to the cache path.  The cache is
-    invalidated automatically when any metadata field changes.
+    all three splits are loaded from it.  Otherwise they are
+    generated from scratch and saved to the cache path. 
+    The cache is invalidated automatically when any metadata field changes.
 
     Parameters
     ----------
@@ -748,7 +729,6 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
 if __name__ == "__main__":
     # test image warping
     import matplotlib.pyplot as plt
-    import h5py
     from dataclasses import dataclass
 
     # build a minimal config
@@ -765,7 +745,7 @@ if __name__ == "__main__":
         val_seed           : int   = 0
         n_test_pairs       : int   = 20
         test_seed          : int   = 42
-        # Set to None to skip saving, or a path to test save/load
+        # Set to None to skip saving
         dataset_cache_path : str   = 'synthetic_data/test_dataset.h5'
 
     cfg = TestConfig()
