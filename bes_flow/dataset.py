@@ -530,7 +530,14 @@ class BESDataset(Dataset):
             flow = torch.flip(flow, dims=[1])
             flow = torch.stack([flow[0], -flow[1]], dim=0)
 
-        # 2. Random 90 deg rotation
+        # 2. X-axis (horizontal) flip 
+        if torch.rand(1).item() < 0.5:
+            fA   = torch.flip(fA,   dims=[2])
+            fB   = torch.flip(fB,   dims=[2])
+            flow = torch.flip(flow, dims=[2])
+            flow = torch.stack([-flow[0], flow[1]], dim=0)   
+
+        # 3. Random 90 deg rotation
         k = torch.randint(4, (1,)).item()
         if k > 0:
             fA   = torch.rot90(fA,   k, dims=[1, 2])
@@ -539,7 +546,7 @@ class BESDataset(Dataset):
             for _ in range(k):
                 flow = torch.stack([flow[1], -flow[0]], dim=0)
 
-        # 3. Intensity jitter
+        # 4. Intensity jitter
         gain = 0.95 + 0.10 * torch.rand(1).item()
         fA   = (fA * gain).clamp(0.0, 1.0)
         fB   = (fB * gain).clamp(0.0, 1.0)
