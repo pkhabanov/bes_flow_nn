@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bes_flow"
+version = "0.1.0"
+description = "Convolutional neural network for BES optical flow estimation"
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "h5py",
+]
+
+[tool.setuptools.packages.find]
+# Tells setuptools to look for packages in the project root.
+# It will find bes_flow/ because it contains __init__.py.
+where = ["."]

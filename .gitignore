@@ -1,0 +1,23 @@
+# Large data files
+raw_data/
+synthetic_data/
+
+# Generated data
+checkpoints/
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment
+.env
+venv/
+.venv/
+
+# OS
+.DS_Store
