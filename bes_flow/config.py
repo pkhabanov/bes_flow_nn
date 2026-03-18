@@ -63,11 +63,12 @@ class Config:
     # The scheduler (CosineAnnealingLR) will decay this toward 0 over training.
     learning_rate: float = 1e-3
 
-    # Weight of the smoothness regularisation term in the total loss.
-    # Higher values enforce smoother flow fields but may under-fit sharp gradients.
-    # Lower values allow noisier flow but fit fine structure better.
+    # Smoothness regularisation weights
     # See loss.py for the exact formulation.
+    # total variation, 1st order derivative
     smooth_weight: float = 0.01
+    # laplacian, 2nd order derivative
+    laplacian_weight: float = 0.05
 
     # Weight of the supervised MSE term
     sup_weight: float = 0.1

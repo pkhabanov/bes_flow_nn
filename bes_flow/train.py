@@ -645,6 +645,7 @@ if __name__ == '__main__':
     # ── Loss ──────────────────────────────────────────────────────────────
     loss_fn = WarpingL2Loss(
         smooth_weight = cfg.smooth_weight,
+        laplacian_weight = cfg.laplacian_weight,
         sup_weight    = cfg.sup_weight,
     )
 

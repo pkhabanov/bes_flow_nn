@@ -10,11 +10,6 @@
 #      If the flow prediction is correct, the warped frame should look
 #      like frame A and the loss should be near zero.
 #
-# This is called "unsupervised" or "self-supervised" training because we
-# never need ground-truth flow labels — the loss is computed directly from
-# the two input frames. The network learns by trying to warp one frame
-# to match the other.
-#
 # In addition to the photometric term above, we add a smoothness penalty
 # that discourages the network from producing jagged, discontinuous flow fields.
 #
@@ -44,10 +39,11 @@ class WarpingL2Loss(nn.Module):
                     Decrease if the flow looks over-smoothed and misses detail.
     sup_weight    : scalar weight on the supervised loss
     """
-    def __init__(self, smooth_weight=0.01, sup_weight=0.1):
+    def __init__(self, smooth_weight=0.01, laplacian_weight=0.05, sup_weight=0.1):
         super().__init__()
         self.smooth_weight = smooth_weight
         self.sup_weight = sup_weight
+        self.laplacian_weight = laplacian_weight
 
 
     def warp(self, frame, flow):
@@ -107,25 +103,42 @@ class WarpingL2Loss(nn.Module):
         '''
         return torch.sqrt(x**2 + eps**2).mean()
 
+
     def smoothness_loss(self, flow, flow_gt=None):
         """
         Penalises spatial gradients in the predicted flow field.
 
-        If flow_gt is provided, the penalty is applied to the RESIDUAL
-        (flow_pred - flow_gt) rather than flow_pred directly. This prevents
-        the smoothness term from fighting legitimate spatial structure in the
-        ground truth (e.g. the radial gradient of a zonal flow profile).
+        Combines first- and second-order spatial regularisation.
+ 
+        First-order  (Total Variation - TV):
+            Penalises d/dx + d/dy. 
+ 
+        Second-order  (Laplacian):
+            Penalises d2/dx2 + d2/dy2 via central differences.
 
+        If flow_gt is provided, the penalty is applied to the RESIDUAL
+        (flow_pred - flow_gt) rather than flow_pred directly. 
         If flow_gt is None (unsupervised mode), the penalty is applied to
         the raw prediction as before.
         """
         target = (flow - flow_gt) if flow_gt is not None else flow
-        dy = torch.abs(target[:, :, 1:, :] - target[:, :, :-1, :]).mean()
-        dx = torch.abs(target[:, :, :, 1:] - target[:, :, :, :-1]).mean()
-        return dx + dy
+ 
+        # First-order: total variation (forward differences)
+        dy1 = torch.abs(target[:, :, 1:, :] - target[:, :, :-1, :]).mean()
+        dx1 = torch.abs(target[:, :, :, 1:] - target[:, :, :, :-1]).mean()
+        tv  = dx1 + dy1
+ 
+        # Second-order: Laplacian (central differences)
+        dy2 = (target[:, :, 2:, :]  - 2 * target[:, :, 1:-1, :]
+               + target[:, :, :-2, :]).abs().mean()
+        dx2 = (target[:, :, :, 2:]  - 2 * target[:, :, :, 1:-1]
+               + target[:, :, :, :-2]).abs().mean()
+        laplacian = dx2 + dy2
+        
+        return tv, laplacian
 
 
-    def forward(self, frameA, frameB, flow, smooth_weight=None, flow_gt=None):
+    def forward(self, frameA, frameB, flow, flow_gt=None):
         """
         Compute the total training loss.
 
@@ -153,15 +166,16 @@ class WarpingL2Loss(nn.Module):
         photo_loss = self.charbonnier(frameA - frameB_warped)
 
         # Smoothness penalty on the predicted flow field
-        smooth_loss = self.smoothness_loss(flow, flow_gt)
+        smooth_loss, laplacian_loss = self.smoothness_loss(flow, flow_gt)
 
         # Optional supervised term: direct MSE between predicted and true flow.
         # Only used during training when ground truth is provided
         sup_loss = F.mse_loss(flow, flow_gt) if flow_gt is not None \
            else flow.new_zeros(())  
 
-        w = smooth_weight if smooth_weight is not None else self.smooth_weight
+        w1 = self.smooth_weight
+        w2 = self.laplacian_weight
         s = self.sup_weight if flow_gt is not None else 0.0
-        total = photo_loss + w * smooth_loss + s * sup_loss
+        total = photo_loss + w1 * smooth_loss + w2 * laplacian_loss + s * sup_loss
         
-        return total, photo_loss, smooth_loss, sup_loss
+        return total, photo_loss, smooth_loss, laplacian_loss, sup_loss
