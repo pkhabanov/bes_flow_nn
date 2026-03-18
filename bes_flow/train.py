@@ -224,8 +224,11 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         Keys: 'total', 'photometric', 'smoothness', 'supervised',
               'val_total', 'val_epe'
     """
+    # dictionary for pre-epoch loss averages
     history = {
-        'total': [], 'photometric': [], 'smoothness': [], 'supervised': [],
+        'total': [], 'photometric': [], 
+        'smoothness': [], 'laplacian': [],
+        'supervised': [],
         'val_total': [], 'val_epe': [],
     }
 
@@ -243,7 +246,8 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         # ── Training ──────────────────────────────────────────────────────
         model.train()
         epoch_totals = {'total': 0., 'photometric': 0.,
-                        'smoothness': 0., 'supervised': 0.}
+                        'smoothness': 0., 'laplacian': 0., 
+                        'supervised': 0.}
 
         for step, batch in enumerate(train_loader, start=1):
             frameA  = batch[0].to(device)
@@ -258,7 +262,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
             flow_pred = model(frameA, frameB)
             
             # Loss
-            total, photo, smooth, sup = loss_fn(
+            total, photo, smooth, lap, sup = loss_fn(
                 frameA, frameB, flow_pred, flow_gt=flow_gt
             )
             # Backward pass
@@ -272,15 +276,17 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
             epoch_totals['total']       += total.item()
             epoch_totals['photometric'] += photo.item()
             epoch_totals['smoothness']  += smooth.item()
+            epoch_totals['laplacian']   += lap.item()
             epoch_totals['supervised']  += sup.item()
 
             if step % max(1, n_batches // 5) == 0:
                 print(
                     f"Epoch [{epoch:>4d}/{total_epochs}] "
                     f"Batch# [{step:>4d}/{n_batches}] | "
-                    f"Total: {total.item():.5f}  "
+                    f"Total loss: {total.item():.5f}  "
                     f"Photometric: {photo.item():.5f}  "
                     f"Smooth: {smooth.item():.5f}  "
+                    f"Laplacian: {lap.item():.5f}  "
                     f"Sup: {sup.item():.5f}"
                 )
 
@@ -368,12 +374,13 @@ def plot_loss_history(history, cfg):
     )
 
     components = [
-        ('total',       'Total loss (train)',   'steelblue',    axes[0, 0], 'Loss'),
-        ('photometric', 'Photometric loss',     'darkorange',   axes[0, 1], 'Loss'),
-        ('smoothness',  'Smoothness loss',      'forestgreen',  axes[0, 2], 'Loss'),
-        ('supervised',  'Supervised loss',      'mediumpurple', axes[0, 3], 'Loss'),
-        ('val_total',   'Total loss (val)',     'crimson',      axes[1, 0], 'Loss'),
-        ('val_epe',     'Val EPE  (px)',        'teal',         axes[1, 1], 'EPE (px)'),
+        ('total',       'Total loss (train)',   'steelblue',     axes[0, 0], 'Loss'),
+        ('photometric', 'Photometric loss',     'darkorange',    axes[0, 1], 'Loss'),
+        ('smoothness',  'Smoothness loss',      'forestgreen',   axes[0, 2], 'Loss'),
+        ('supervised',  'Supervised loss',      'mediumpurple',  axes[0, 3], 'Loss'),
+        ('laplacian',   'Laplacian loss',       'darkturquoise', axes[1, 0], 'Loss'),
+        ('val_total',   'Total loss (val)',     'crimson',       axes[1, 1], 'Loss'),
+        ('val_epe',     'Val EPE  (px)',        'teal',          axes[1, 2], 'EPE (px)'),
     ]
 
     for key, label, color, ax, ylabel in components:
@@ -389,7 +396,6 @@ def plot_loss_history(history, cfg):
         ax.set_title(label);     ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3);  ax.set_xlim(1, len(epochs))
 
-    axes[1, 2].set_visible(False)
     axes[1, 3].set_visible(False)
 
     plt.tight_layout()
@@ -412,7 +418,7 @@ def plot_curriculum_loss(full_history, stages, cfg):
         cumulative += stage['epochs']
         boundaries.append(cumulative)
 
-    fig, axes = plt.subplots(1, 5, figsize=(22, 4))
+    fig, axes = plt.subplots(1, 6, figsize=(22, 4))
     fig.suptitle(
         f"Curriculum training  |  {cfg.num_epochs} total epochs",
         fontsize=12, fontweight='bold',
@@ -422,6 +428,7 @@ def plot_curriculum_loss(full_history, stages, cfg):
         ('total',       'Total loss (train)',  'steelblue'),
         ('photometric', 'Photometric loss',    'darkorange'),
         ('smoothness',  'Smoothness loss',     'forestgreen'),
+        ('laplacian',   'Laplacian loss',     'darkturquoise'),
         ('val_total',   'Total loss (val)',    'crimson'),
         ('val_epe',     'Val EPE  (px)',       'teal'),
     ]
@@ -523,7 +530,7 @@ def curriculum_train(model, train_frames, val_frames, loss_fn, cfg, device):
         return f"{root}_{flow_type}{ext}"
 
     full_history = {
-        'total': [], 'photometric': [], 'smoothness': [],
+        'total': [], 'photometric': [], 'smoothness': [], 'laplacian': [],
         'supervised': [], 'val_total': [], 'val_epe': [],
     }
     global_epoch = 0  # tracks absolute epoch number across all stages
