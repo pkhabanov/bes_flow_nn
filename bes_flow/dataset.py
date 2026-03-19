@@ -675,6 +675,8 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
     val_A,   val_B,   val_flows,
     test_A,  test_B,  test_flows
     """
+    H, W = train_frames.shape[1], train_frames.shape[2]
+    
     # Training set - random seed
     print("Generating training set:")
     train_A, train_B, train_flows = generate_dataset(
