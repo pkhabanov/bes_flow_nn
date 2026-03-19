@@ -34,6 +34,7 @@ import h5py
 
 from bes_flow.config  import cfg
 from bes_flow.model   import SiameseDisplacementNet
+from bes_flow.model_s import BESFlowNetS
 from bes_flow.loss    import WarpingL2Loss
 from bes_flow.dataset import make_datasets, make_dataloaders, generate_dataset, BESDataset
 from bes_flow.metrics import (compute_all_metrics, print_summary,
@@ -48,7 +49,7 @@ def predict_dataset(model, dataset, device, batch_size=16):
 
     Parameters
     ----------
-    model      : trained SiameseDisplacementNet in eval mode
+    model      : trained model in eval mode
     dataset    : BESDataset — framesA/B/flows_gt accessible as attributes
     device     : torch.device
     batch_size : int
@@ -156,7 +157,7 @@ def run_evaluation(model, test_dataset, test_frames, device, cfg, output_dir):
 
     Parameters
     ----------
-    model        : trained SiameseDisplacementNet in eval mode
+    model        : trained model in eval mode
     test_dataset : BESDataset — held-out test set from make_datasets()
     test_frames  : (N_test, H, W) — raw test frames for cross-flow comparison
     device       : torch.device
@@ -207,7 +208,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
 
     Parameters
     ----------
-    model        : SiameseDisplacementNet
+    model        : neural network model that takes frameA and frameB as inputs
     train_loader : DataLoader — yields (frameA, frameB, flow_gt) batches
     val_loader   : DataLoader — same structure, for validation
     loss_fn      : WarpingL2Loss
@@ -490,7 +491,7 @@ def curriculum_train(model, train_frames, val_frames, loss_fn, cfg, device):
 
     Parameters
     ----------
-    model        : SiameseDisplacementNet — initialised but untrained
+    model        : initialised but untrained model
     train_frames : (N_train, H, W) float array — raw BES training frames
     val_frames   : (N_val,   H, W) float array — raw BES validation frames
     loss_fn      : WarpingL2Loss
@@ -642,10 +643,11 @@ if __name__ == '__main__':
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = SiameseDisplacementNet(
-        feature_channels = cfg.feature_channels,
-        max_displacement = cfg.max_displacement,
-    ).to(device)
+    #model = SiameseDisplacementNet(
+    #    feature_channels = cfg.feature_channels,
+    #    max_displacement = cfg.max_displacement,
+    #.to(device)
+    model = BESFlowNetS()
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}\n")
 
