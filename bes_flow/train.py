@@ -285,9 +285,9 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
                     f"Epoch [{epoch:>4d}/{total_epochs}] "
                     f"Batch# [{step:>4d}/{n_batches}] | "
                     f"Total loss: {total.item():.5f}  "
-                    f"Photometric: {photo.item():.5f}  "
+                    f"Photo: {photo.item():.5f}  "
                     f"Smooth: {smooth.item():.5f}  "
-                    f"Laplacian: {lap.item():.5f}  "
+                    f"Lapl: {lap.item():.5f}  "
                     f"Sup: {sup.item():.5f}"
                 )
 
@@ -622,9 +622,12 @@ if __name__ == '__main__':
     n_val    = int(cfg.val_split  * N)
     n_train  = N - n_test - n_val
 
-    train_frames = all_frames[:n_train]
-    val_frames   = all_frames[n_train : n_train + n_val]
-    test_frames  = all_frames[n_train + n_val:]
+    # make a random split (use test_seed)
+    rng     = np.random.default_rng(cfg.test_seed)
+    indices = rng.permutation(N)
+    train_frames = all_frames[indices[:n_train]]
+    val_frames   = all_frames[indices[n_train : n_train + n_val]]
+    test_frames  = all_frames[indices[n_train + n_val:]]
 
     print(f"Frame split:")
     print(f"  Total      : {N}")
