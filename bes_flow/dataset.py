@@ -700,26 +700,27 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
 
     np.random.set_state(rng_state)  # restore for training
 
-    # Test set - fixed test_seed 
+    # Test set - fixed test_seed; may be empty during curriculum stages
     # n_pairs_per_frame is chosen so that the total is ≥ cfg.n_test_pairs.
-    print("Generating test set (fixed seed, independent of training):")
     if len(test_frames) == 0:
-        test_A = test_B = test_flows = np.empty((0, ...), dtype=np.float32)
+        print("  Skipping test set (empty test_frames).")
+        empty_f = np.empty((0, 1, H, W), dtype=np.float32)
+        empty_v = np.empty((0, 2, H, W), dtype=np.float32)
+        test_A = test_B = empty_f
+        test_flows = empty_v
     else:
+        print("Generating test set (fixed seed, independent of training):")
         n_test_ppf = max(1, cfg.n_test_pairs // len(test_frames))
-
-    rng_state = np.random.get_state()
-    np.random.seed(cfg.test_seed)
-
-    test_A, test_B, test_flows = generate_dataset(
-        test_frames,
-        n_pairs_per_frame = n_test_ppf,
-        max_shift         = cfg.max_shift,
-        noise_std         = cfg.noise_std,
-        flow_type         = cfg.flow_type,
-    )
-
-    np.random.set_state(rng_state)
+        rng_state  = np.random.get_state()
+        np.random.seed(cfg.test_seed)
+        test_A, test_B, test_flows = generate_dataset(
+            test_frames,
+            n_pairs_per_frame = n_test_ppf,
+            max_shift         = cfg.max_shift,
+            noise_std         = cfg.noise_std,
+            flow_type         = cfg.flow_type,
+        )
+        np.random.set_state(rng_state)
 
     return (train_A, train_B, train_flows,
             val_A,   val_B,   val_flows,
