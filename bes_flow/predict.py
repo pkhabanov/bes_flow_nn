@@ -35,6 +35,7 @@ from matplotlib.colors import CenteredNorm
 
 from bes_flow.config  import cfg
 from bes_flow.model   import SiameseDisplacementNet
+from bes_flow.model_s import BESFlowNetS
 
 
 def load_model(weights_path, device, cfg=cfg):
@@ -52,10 +53,11 @@ def load_model(weights_path, device, cfg=cfg):
     -------
     model : SiameseDisplacementNet in eval mode, on the correct device
     """
-    model = SiameseDisplacementNet(
-        feature_channels = cfg.feature_channels,
-        max_displacement = cfg.max_displacement,
-    ).to(device)
+    #model = SiameseDisplacementNet(
+    #    feature_channels = cfg.feature_channels,
+    #    max_displacement = cfg.max_displacement,
+    #).to(device)
+    model = BESFlowNetS()
 
     # Load the saved weight dictionary.
     # map_location ensures weights saved on GPU load correctly on CPU and vice versa.
