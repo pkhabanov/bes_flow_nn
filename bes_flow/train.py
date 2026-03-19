@@ -605,6 +605,8 @@ if __name__ == '__main__':
     )
     parser.add_argument('--curriculum', action='store_true',
                         help='Use four-stage LR-curriculum training')
+    parser.add_argument('--skip_train', action='store_true',
+                        help='Use to skip training')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -660,24 +662,25 @@ if __name__ == '__main__':
         laplacian_weight = cfg.laplacian_weight,
         sup_weight    = cfg.sup_weight,
     )
-
-    # ── Train ─────────────────────────────────────────────────────────────
-    if args.curriculum:
-        full_history = curriculum_train(
-            model, train_frames, val_frames, loss_fn, cfg, device
-        )
-    else:
-        optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=cfg.num_epochs
-        )
-        print("Starting single-stage training...\n")
-        loss_history = train(
-            model, train_loader, val_loader,
-            loss_fn, optimizer, scheduler,
-            cfg, device,
-        )
-        plot_loss_history(loss_history, cfg)
+    
+    if not args.skip_train:
+        # ── Train ─────────────────────────────────────────────────────────────
+        if args.curriculum:
+            full_history = curriculum_train(
+                model, train_frames, val_frames, loss_fn, cfg, device
+            )
+        else:
+            optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=cfg.num_epochs
+            )
+            print("Starting single-stage training...\n")
+            loss_history = train(
+                model, train_loader, val_loader,
+                loss_fn, optimizer, scheduler,
+                cfg, device,
+            )
+            plot_loss_history(loss_history, cfg)
 
     # ── Evaluate on the test set ──────────────────────────────────────────
     # Load the best checkpoint (lowest val EPE during training).
