@@ -310,10 +310,10 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
                 # model prediction
                 flow_pred = model(frameA, frameB)
                 if cfg.is_supervised:
-                    loss, _, _, _ = loss_fn(frameA, frameB, flow_pred,
+                    loss, _, _, _, _ = loss_fn(frameA, frameB, flow_pred,
                                             flow_gt=flow_gt)
                 else:
-                    loss, _, _, _ = loss_fn(frameA, frameB, flow_pred,
+                    loss, _, _, _, _ = loss_fn(frameA, frameB, flow_pred,
                                             flow_gt=None)
                 val_loss_sum += loss.item()
                 # End point error: per-pixel Euclidean distance, 
