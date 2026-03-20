@@ -31,6 +31,8 @@ import argparse
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.colors import CenteredNorm
 import h5py
 
 from bes_flow.config  import cfg
@@ -104,6 +106,9 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
     """
     flow_types = ['smooth', 'modes', 'zonal', 'well']
     epe_means, epe_stds, repe_means = [], [], []
+    
+    # Accumulate one random sample per flow type for the qualitative figure.
+    samples = []   # list of (flow_type, fA, fB, gt, pred, mean_epe) per type
 
     for ft in flow_types:
         fA, fB, gt = _generate_test_set_for_flow_type(
@@ -116,20 +121,32 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
         epe_stds.append(metrics['EPE'].std())
         repe_means.append(metrics['rEPE'].mean() * 100)
 
+        # Pick one random pair index
+        idx = np.random.randint(len(fA))
+        samples.append((ft,
+                        fA[idx, 0],    # (H, W)
+                        fB[idx, 0],    # (H, W)
+                        gt[idx],       # (2, H, W)
+                        pred[idx],     # (2, H, W)
+                        metrics['EPE'][idx]))
+
     x      = np.arange(len(flow_types))
     colors = ['steelblue', 'darkorange', 'forestgreen', 'mediumpurple']
 
+    # fig1 - bar charts
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     fig.suptitle('Performance across flow types', fontsize=13, fontweight='bold')
 
     axes[0].bar(x, epe_means, yerr=epe_stds, color=colors,
                 capsize=5, edgecolor='black', alpha=0.8)
-    axes[0].set_xticks(x);  axes[0].set_xticklabels(flow_types)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(flow_types)
     axes[0].set_ylabel('Mean EPE  (px)');  axes[0].set_title('End-Point Error')
     axes[0].grid(True, alpha=0.3, axis='y')
 
     axes[1].bar(x, repe_means, color=colors, edgecolor='black', alpha=0.8)
-    axes[1].set_xticks(x);  axes[1].set_xticklabels(flow_types)
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(flow_types)
     axes[1].set_ylabel('Mean rEPE  (%)');  axes[1].set_title('Relative EPE')
     axes[1].grid(True, alpha=0.3, axis='y')
 
@@ -139,22 +156,95 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
     plt.show()
     print(f"Saved: {path}")
 
+    # fig2 - flow comparison
+    # Columns: Frame A | Frame B + GT quiver | Frame B + pred quiver | EPE map
+    n_rows = len(samples)
+    H, W   = samples[0][1].shape   # spatial dims from first sample's frameA
+ 
+    quiver_step = 8
+    ys          = np.arange(quiver_step // 2, H, quiver_step)
+    xs          = np.arange(quiver_step // 2, W, quiver_step)
+    xx, yy      = np.meshgrid(xs, ys)
+ 
+    fig = plt.figure(figsize=(20, 4 * n_rows))
+    fig.suptitle('Qualitative examples across flow types  —  one random pair per type',
+                 fontsize=13, fontweight='bold')
+ 
+    gs = gridspec.GridSpec(n_rows, 5, figure=fig, hspace=0.35, wspace=0.25)
+ 
+    col_titles = ['Frame A', 'Frame B  +  GT flow', 'Frame B  +  pred flow',
+                  'EPE  vx  (px)', 'EPE  vy  (px)']
+ 
+    for row, (ft, fA, fB, gt, pred, epe_val) in enumerate(samples):
+        # Per-component absolute errors (H, W)
+        #epe_vx = np.abs(pred[0] - gt[0])   # |Δdx|
+        #epe_vy = np.abs(pred[1] - gt[1])   # |Δdy|
+        diff_vx = pred[0] - gt[0]   # (H, W)
+        diff_vy = pred[1] - gt[1]   # (H, W)
+ 
+        # Shared colour scale across dvx and dvy for direct comparability
+        #vmax_epe = max(epe_vx.max(), epe_vy.max())
+        #vmax_diff = max(np.abs(diff_vx).max(), np.abs(diff_vy).max())
+        vmax_diff = 5.0
+        norm = CenteredNorm(vcenter=0, halfrange=vmax_diff)
+ 
+        # col 0 — Frame A
+        ax0 = fig.add_subplot(gs[row, 0])
+        ax0.imshow(fA, cmap='inferno', origin='upper')
+        ax0.set_ylabel(f'{ft}\nEPE={epe_val:.3f} px', fontsize=9)
+        if row == 0:  ax0.set_title(col_titles[0])
+        ax0.set_xticks([]);  ax0.set_yticks([])
+ 
+        # col 1 — Frame B with GT flow quiver
+        ax1 = fig.add_subplot(gs[row, 1])
+        ax1.imshow(fB, cmap='inferno', origin='upper')
+        ax1.quiver(xx, yy, gt[0][yy, xx], -gt[1][yy, xx],
+                   color='cyan', scale=60, scale_units='width',
+                   width=0.005, headwidth=4)
+        if row == 0:  ax1.set_title(col_titles[1])
+        ax1.set_xticks([]);  ax1.set_yticks([])
+ 
+        # col 2 — Frame B with predicted flow quiver
+        ax2 = fig.add_subplot(gs[row, 2])
+        ax2.imshow(fB, cmap='inferno', origin='upper')
+        ax2.quiver(xx, yy, pred[0][yy, xx], -pred[1][yy, xx],
+                   color='yellow', scale=60, scale_units='width',
+                   width=0.005, headwidth=4)
+        if row == 0:  ax2.set_title(col_titles[2])
+        ax2.set_xticks([]);  ax2.set_yticks([])
+ 
+        # col 3 — per-pixel error in vx
+        ax3 = fig.add_subplot(gs[row, 3])
+        #im3 = ax3.imshow(epe_vx, cmap='hot', origin='upper',
+        #                  vmin=0, vmax=vmax_epe)
+        im3 = ax3.imshow(diff_vx, cmap='RdBu_r', origin='upper', norm=norm)
+        plt.colorbar(im3, ax=ax3, shrink=0.8, label='px')
+        if row == 0:  ax3.set_title(col_titles[3])
+        ax3.set_xticks([]);  ax3.set_yticks([])
+ 
+        # col 4 — per-pixel error in vy
+        ax4 = fig.add_subplot(gs[row, 4])
+        #im4 = ax4.imshow(epe_vy, cmap='hot', origin='upper',
+        #                 vmin=0, vmax=vmax_epe)
+        im4 = ax4.imshow(diff_vy, cmap='RdBu_r', origin='upper', norm=norm)
+        plt.colorbar(im4, ax=ax4, shrink=0.8, label='px')
+        if row == 0:  ax4.set_title(col_titles[4])
+        ax4.set_xticks([]);  ax4.set_yticks([])
+ 
+    path2 = os.path.join(output_dir, 'cross_flow_examples.png')
+    plt.savefig(path2, dpi=150, bbox_inches='tight')
+    plt.show()
+    plt.close('all')
+    print(f"Saved: {path2}")
+
 
 def run_evaluation(model, test_dataset, test_frames, device, cfg, output_dir):
     """
     Full evaluation pipeline on the held-out test set.
 
-    Steps
-    ─────
     1. Run model inference on test_dataset (pre-generated, fixed seed).
     2. Compute all metrics for every pair.
     3. Print summary table.
-    4. Save diagnostic figures:
-         metric_distributions.png
-         epe_vs_displacement.png
-         spatial_error_map.png
-         qualitative_examples.png
-         cross_flow_comparison.png
 
     Parameters
     ----------
@@ -341,10 +431,11 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         )
 
         # Per-epoch checkpoint
-        torch.save(
-            model.state_dict(),
-            os.path.join(cfg.checkpoint_dir, f"model_epoch_{epoch:04d}.pt"),
-        )
+        if epoch % max(1, total_epochs // 4) == 0:
+            torch.save(
+                model.state_dict(),
+                os.path.join(cfg.checkpoint_dir, f"model_epoch_{epoch:04d}.pt"),
+            )
 
         # Best-model checkpoint (tracked by val EPE)
         if val_epe < best_val_epe:
@@ -693,7 +784,8 @@ if __name__ == '__main__':
 
     # ── Evaluate on the test set ──────────────────────────────────────────
     # Load the best checkpoint (lowest val EPE during training).
-    best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_best.pt')
+    #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_best.pt')
+    best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_stage4_well_final.pt')
     print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
     model = load_model(best_ckpt, device, cfg)
 
