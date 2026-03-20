@@ -604,6 +604,10 @@ def make_datasets(train_frames, val_frames, test_frames, cfg):
     val_dataset   = BESDataset(val_A,   val_B,   val_flows,   augment=False)
     test_dataset  = BESDataset(test_A,  test_B,  test_flows,  augment=False)
 
+    del train_A, train_B, train_flows
+    del val_A,   val_B,   val_flows
+    del test_A,  test_B,  test_flows
+
     print(f"\nDataset summary:")
     print(f"  Train : {len(train_dataset)} pairs  (augmentation ON)")
     print(f"  Val   : {len(val_dataset)} pairs  (augmentation OFF)")
@@ -627,26 +631,28 @@ def make_dataloaders(train_dataset, val_dataset, test_dataset, cfg):
     -------
     train_loader, val_loader, test_loader : DataLoader
     """
+    pin_mem = torch.cuda.is_available()
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size  = cfg.batch_size,
         shuffle     = True,
         num_workers = cfg.num_workers,
-        pin_memory  = True,
+        pin_memory  = pin_mem,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size  = cfg.batch_size,
         shuffle     = False,
         num_workers = cfg.num_workers,
-        pin_memory  = True,
+        pin_memory  = pin_mem,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size  = cfg.batch_size,
         shuffle     = False,
         num_workers = cfg.num_workers,
-        pin_memory  = True,
+        pin_memory  = pin_mem,
     )
 
     print(f"DataLoader summary:")

@@ -36,7 +36,7 @@ class Config:
     # Number of synthetic pairs generated per real BES frame.
     # Total training pairs = len(train_frames) * n_pairs_per_frame.
     # Increase to enlarge the dataset without needing more real frames.
-    n_pairs_per_frame: int = 1
+    n_pairs_per_frame: int = 4
 
     # --- Model --------------------------------------------------------------
     # Number of channels in the shared CNN encoder output feature maps.
@@ -54,7 +54,7 @@ class Config:
     is_supervised: bool = False
 
     # Total number of passes through the training data.
-    num_epochs: int = 10
+    num_epochs: int = 80
 
     # Number of frame pairs processed together in one forward/backward pass.
     batch_size: int = 32

@@ -26,6 +26,7 @@
 #   python -m bes_flow.train --curriculum      # LR-curriculum training
 
 import os
+import json
 import argparse
 import numpy as np
 import torch
@@ -350,7 +351,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
             best_val_epe = val_epe
             torch.save(
                 model.state_dict(),
-                os.path.join(cfg.checkpoint_dir, "model_best.pt"),
+                os.path.join(cfg.checkpoint_dir, f"model_{cfg.flow_type}best.pt"),
             )
             print(f"  ★ New best val EPE: {best_val_epe:.4f} px  "
                   f" -> saved model_best.pt\n")
@@ -592,6 +593,9 @@ def curriculum_train(model, train_frames, val_frames, loss_fn, cfg, device):
             os.path.join(cfg.checkpoint_dir, ckpt_name),
         )
         print(f"\nStage checkpoint saved: {ckpt_name}")
+        
+        del stage_train_loader, stage_val_loader
+        del stage_train_ds, stage_val_ds
 
     # Plot the full curriculum loss history
     plot_curriculum_loss(full_history, stages, cfg)
@@ -666,9 +670,10 @@ if __name__ == '__main__':
     if not args.skip_train:
         # ── Train ─────────────────────────────────────────────────────────────
         if args.curriculum:
-            full_history = curriculum_train(
+            loss_history = curriculum_train(
                 model, train_frames, val_frames, loss_fn, cfg, device
             )
+            history_path = cfg.output_dir + 'train_history_curriculum.json'
         else:
             optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -681,6 +686,10 @@ if __name__ == '__main__':
                 cfg, device,
             )
             plot_loss_history(loss_history, cfg)
+            history_path = cfg.output_dir + f'train_history_{cfg.flow_type}.json'
+        # save history to json
+        with open(history_path, 'w') as f:
+            json.dump(loss_history, f, indent=2)
 
     # ── Evaluate on the test set ──────────────────────────────────────────
     # Load the best checkpoint (lowest val EPE during training).
