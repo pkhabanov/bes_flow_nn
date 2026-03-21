@@ -146,15 +146,18 @@ def zonal_plus_turbulence_flow(H, W,
         # Gaussian profile (Er well approximation)
         x_coords = np.arange(0, W)
         well_pos = well_pos + 0.25 * np.random.randn()
-        well_width = well_width + 0.17 * np.random.randn()
+        #well_width = well_width + 0.25 * np.random.randn()
+        well_width = np.random.uniform(well_width, 0.5)
         zonal_profile = np.exp(-((x_coords - well_pos*W)**2) / (2 * (well_width*W)**2))
     else:
         raise ValueError(
             f"Unknown profile_type '{profile_type}'. Choose 'sin' or 'well'."
         )
     
-    zonal_dy = zonal_amplitude * zonal_profile     # y-component varies with x
-    zonal_dx = np.zeros(W, dtype=np.float32)       # no radial zonal component
+    # y-component varies with x
+    zonal_dy = np.random.uniform(low=0.7*zonal_amplitude, high=zonal_amplitude) * zonal_profile 
+    # no radial zonal component
+    zonal_dx = np.zeros(W, dtype=np.float32)       
 
     # Broadcast to full (H, W) arrays — zonal flow is uniform in x
     flow_zonal = np.stack([
@@ -745,9 +748,9 @@ if __name__ == "__main__":
     class TestConfig:
         val_split          : float = 0.1
         test_split         : float = 0.1
-        max_shift          : float = 8.0
+        max_shift          : float = 10.0
         noise_std          : float = 0.02
-        flow_type          : str   = 'zonal'
+        flow_type          : str   = 'well'
         batch_size         : int   = 4
         num_workers        : int   = 0
         n_pairs_per_frame  : int   = 1

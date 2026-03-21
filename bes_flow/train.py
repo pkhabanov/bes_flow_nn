@@ -431,7 +431,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         )
 
         # Per-epoch checkpoint
-        if epoch % max(1, total_epochs // 4) == 0:
+        if epoch % 10 == 0:
             torch.save(
                 model.state_dict(),
                 os.path.join(cfg.checkpoint_dir, f"model_epoch_{epoch:04d}.pt"),
@@ -440,13 +440,16 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         # Best-model checkpoint (tracked by val EPE)
         if val_epe < best_val_epe:
             best_val_epe = val_epe
+            fname = f"model_{cfg.flow_type}_best.pt"
             torch.save(
                 model.state_dict(),
-                os.path.join(cfg.checkpoint_dir, f"model_{cfg.flow_type}best.pt"),
+                os.path.join(cfg.checkpoint_dir, fname),
             )
             print(f"  ★ New best val EPE: {best_val_epe:.4f} px  "
-                  f" -> saved model_best.pt\n")
-
+                  f" -> saved {fname}\n")
+    
+    del train_loader, val_loader
+    
     return history
 
 
@@ -702,6 +705,8 @@ if __name__ == '__main__':
                         help='Use four-stage LR-curriculum training')
     parser.add_argument('--skip_train', action='store_true',
                         help='Use to skip training')
+    parser.add_argument('--checkpoint', type=str,
+                        help='Load model checkpoint to start with')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -743,13 +748,17 @@ if __name__ == '__main__':
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    #model = SiameseDisplacementNet(
-    #    feature_channels = cfg.feature_channels,
-    #    max_displacement = cfg.max_displacement,
-    #.to(device)
-    model = BESFlowNetS()
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {n_params:,}\n")
+    if args.checkpoint is not None:
+        print(f"\nLoading checkpoint: {args.checkpoint}")
+        model = load_model(args.checkpoint , device, cfg)
+    else:
+        #model = SiameseDisplacementNet(
+        #    feature_channels = cfg.feature_channels,
+        #    max_displacement = cfg.max_displacement,
+        #.to(device)
+        model = BESFlowNetS()
+        n_params = sum(p.numel() for p in model.parameters())
+        print(f"Model parameters: {n_params:,}\n")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     loss_fn = WarpingL2Loss(
@@ -785,7 +794,7 @@ if __name__ == '__main__':
     # ── Evaluate on the test set ──────────────────────────────────────────
     # Load the best checkpoint (lowest val EPE during training).
     #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_best.pt')
-    best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_stage4_well_final.pt')
+    best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_well_best.pt')
     print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
     model = load_model(best_ckpt, device, cfg)
 
