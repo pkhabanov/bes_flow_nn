@@ -49,7 +49,7 @@ def random_smooth_flow(H, W, max_shift=6.0, smoothing_sigma=8.0):
     # (not dx and dy independently) to preserve the direction distribution.
     magnitude = np.sqrt(dx_smooth**2 + dy_smooth**2)
     peak_mag  = magnitude.max() + 1e-8
-    scale     = max_shift / peak_mag
+    scale     = np.random.uniform(0.7*max_shift, max_shift) / peak_mag
 
     return np.stack([dx_smooth * scale,
                      dy_smooth * scale], axis=0)
@@ -99,7 +99,7 @@ def sinusoidal_modes(H, W, n_modes=8, max_shift=6.0):
     # Normalise to max_shift
     magnitude = np.sqrt(dx**2 + dy**2)
     peak_mag  = magnitude.max() + 1e-8
-    scale     = max_shift / peak_mag
+    scale     = np.random.uniform(0.7*max_shift, max_shift) / peak_mag
 
     return np.stack([dx * scale, dy * scale], axis=0)
 
@@ -140,13 +140,14 @@ def zonal_plus_turbulence_flow(H, W,
     if profile_type == 'sin':
         # Smooth sinusoidal variation of y-velocity across the x (radial) axis.
         # add small random phase shift
-        x_coords = np.linspace(0, 2 * np.pi, W, dtype=np.float32) + 0.2 * np.pi * np.random.randn()
+        x_coords = np.linspace(0, 2 * np.pi, W, dtype=np.float32) + np.pi * np.random.uniform(-0.25, 0.25)
         zonal_profile = np.sin(x_coords)  # (W,) — radial profile
     elif profile_type == 'well':
         # Gaussian profile (Er well approximation)
         x_coords = np.arange(0, W)
-        well_pos = well_pos + 0.25 * np.random.randn()
+        #well_pos = well_pos + 0.25 * np.random.randn()
         #well_width = well_width + 0.25 * np.random.randn()
+        well_pos = np.random.uniform(0.2, 0.8)
         well_width = np.random.uniform(well_width, 0.5)
         zonal_profile = np.exp(-((x_coords - well_pos*W)**2) / (2 * (well_width*W)**2))
     else:
@@ -155,7 +156,7 @@ def zonal_plus_turbulence_flow(H, W,
         )
     
     # y-component varies with x
-    zonal_dy = np.random.uniform(low=0.7*zonal_amplitude, high=zonal_amplitude) * zonal_profile 
+    zonal_dy = np.random.uniform(0.7*zonal_amplitude, zonal_amplitude) * zonal_profile 
     # no radial zonal component
     zonal_dx = np.zeros(W, dtype=np.float32)       
 
@@ -748,7 +749,7 @@ if __name__ == "__main__":
     class TestConfig:
         val_split          : float = 0.1
         test_split         : float = 0.1
-        max_shift          : float = 10.0
+        max_shift          : float = 12.0
         noise_std          : float = 0.02
         flow_type          : str   = 'well'
         batch_size         : int   = 4
@@ -763,7 +764,7 @@ if __name__ == "__main__":
     cfg = TestConfig()
 
     # load bes frames
-    fname = 'raw_data/194313_t=2620-2640_f=30-200_1000fr.h5'
+    fname = 'raw_data/194313_t=2620-2640_f=30-200_2000fr.h5'
     print('\nLoading images ' + fname)
     with h5py.File(fname, 'r') as hf:
         all_frames = hf['images'][:]

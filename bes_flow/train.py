@@ -323,6 +323,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         'supervised': [],
         'val_total': [], 'val_epe': [],
     }
+    history_path = cfg.output_dir + f'train_history_{cfg.flow_type}.json'
 
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
     os.makedirs(cfg.output_dir,     exist_ok=True)
@@ -434,8 +435,11 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         if epoch % 10 == 0:
             torch.save(
                 model.state_dict(),
-                os.path.join(cfg.checkpoint_dir, f"model_epoch_{epoch:04d}.pt"),
+                os.path.join(cfg.checkpoint_dir, f"model_{cfg.flow_type}_epoch_{epoch:04d}.pt"),
             )
+            # save history to json
+            with open(history_path, 'w') as f:
+                json.dump(history, f, indent=2)
 
         # Best-model checkpoint (tracked by val EPE)
         if val_epe < best_val_epe:
@@ -790,20 +794,20 @@ if __name__ == '__main__':
         # save history to json
         with open(history_path, 'w') as f:
             json.dump(loss_history, f, indent=2)
+    else:
+        # ── Evaluate on the test set ──────────────────────────────────────────
+        # Load the best checkpoint (lowest val EPE during training).
+        #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_best.pt')
+        best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_well_best.pt')
+        print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
+        model = load_model(best_ckpt, device, cfg)
 
-    # ── Evaluate on the test set ──────────────────────────────────────────
-    # Load the best checkpoint (lowest val EPE during training).
-    #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_best.pt')
-    best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_well_best.pt')
-    print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
-    model = load_model(best_ckpt, device, cfg)
-
-    run_evaluation(
-        model,
-        test_dataset  = test_dataset,
-        test_frames   = test_frames,
-        device        = device,
-        cfg           = cfg,
-        output_dir    = os.path.join(cfg.output_dir, 'evaluation'),
-    )
-    
+        run_evaluation(
+            model,
+            test_dataset  = test_dataset,
+            test_frames   = test_frames,
+            device        = device,
+            cfg           = cfg,
+            output_dir    = os.path.join(cfg.output_dir, 'evaluation'),
+        )
+        

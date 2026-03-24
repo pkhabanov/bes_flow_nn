@@ -1,19 +1,16 @@
 # bes_flow/evaluate.py
 #
-# Structured evaluation of a trained SiameseDisplacementNet against
+# Structured evaluation of a trained model against
 # synthetic test data with known ground-truth velocity fields.
 #
 # Usage
 # ─────
 # From the command line:
 #   python -m bes_flow.evaluate \
-#       --frames    data/raw/test_frames.npy \
+#       --data      data/raw/test_frames.npy \
 #       --weights   checkpoints/model_zonal_final.pt \
 #       --output    outputs/evaluation/
-#
-# Or imported into a Jupyter notebook:
-#   from bes_flow.evaluate import run_evaluation
-#   results = run_evaluation(model, test_frames, device, cfg)
+
 
 import os
 import argparse
@@ -65,8 +62,8 @@ def generate_test_set(frames, flow_type, max_shift,
         frames,
         n_pairs_per_frame = n_pairs_per_frame,
         max_shift  = max_shift,
-        noise_std         = noise_std,
-        flow_type         = flow_type,
+        noise_std  = noise_std,
+        flow_type  = flow_type,
     )
 
     np.random.set_state(rng_state)
@@ -548,8 +545,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Evaluate trained BES flow model on synthetic test data'
     )
-    parser.add_argument('--frames',   required=True,
-                        help='Path to .npy test frames, shape (N, 64, 64)')
+    parser.add_argument('--data',   required=True,
+                        help='Path to .h5 test frames, shape (N, 64, 64)')
     parser.add_argument('--weights',  required=True,
                         help='Path to model checkpoint (.pt)')
     parser.add_argument('--output',   default='outputs/evaluation/',
