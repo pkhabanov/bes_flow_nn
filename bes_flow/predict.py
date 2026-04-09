@@ -32,18 +32,16 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import CenteredNorm
-
 from bes_flow.config  import cfg
-from bes_flow.model   import SiameseDisplacementNet
-from bes_flow.model_s import BESFlowNetS
 
 
-def load_model(weights_path, device, cfg=cfg):
+def load_model(model, weights_path, device, cfg=cfg):
     """
     Instantiate the network and load trained weights from a checkpoint file.
 
     Parameters
     ----------
+    model : your model
     weights_path : str         — path to a .pt checkpoint saved by train.py
     device       : torch.device
     cfg          : Config      — must match the config used during training
@@ -51,13 +49,9 @@ def load_model(weights_path, device, cfg=cfg):
 
     Returns
     -------
-    model : SiameseDisplacementNet in eval mode, on the correct device
+    model : updated model
     """
-    #model = SiameseDisplacementNet(
-    #    feature_channels = cfg.feature_channels,
-    #    max_displacement = cfg.max_displacement,
-    #).to(device)
-    model = BESFlowNetS()
+    model.to(device)
 
     # Load the saved weight dictionary.
     # map_location ensures weights saved on GPU load correctly on CPU and vice versa.

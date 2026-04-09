@@ -11,7 +11,7 @@ class Config:
     # --- Data ------------------------------------------------------------
     # Path to the NumPy array of raw BES frames, shape (N, 64, 64).
     # Each frame is a single 2-D snapshot of plasma density fluctuations.
-    data_path: str = "raw_data/194313_t=2620-2640_f=30-200_1000fr.h5"
+    data_path: str = "raw_data/194313_t=2620-2640_f=30-200_2000fr.h5"
 
     # Fraction of frames held out for validation and training
     val_split: float = 0.1
@@ -26,12 +26,12 @@ class Config:
 
     # Maximum pixel displacement applied when generating synthetic frame pairs.
     # Drawn uniformly from [-max_shift, +max_shift] pixels in both x and y.
-    max_shift: float = 8.0
+    max_shift: float = 12.0
 
     # Standard deviation of Gaussian noise added to each synthetic frame.
     # Simulates the electronic noise present in real BES detector signals.
     # Set to 0 to train without noise augmentation.
-    noise_std: float = 0.02
+    noise_std: float = 0.0
 
     # Number of synthetic pairs generated per real BES frame.
     # Total training pairs = len(train_frames) * n_pairs_per_frame.
@@ -45,16 +45,14 @@ class Config:
     # Search radius (in pixels, in feature space) for the correlation layer.
     # The layer will test all displacements (dx, dy) with |dx|, |dy| <= this value.
     # It determines the cost-volume size as (2*d+1)^2 channels
-    # Because the encoder downsamples by 2x, a value of 6 here covers ±12 pixels
-    # in the original 64x64 image space — adjust if your flow is larger/smaller.
-    max_displacement: int = 6
+    max_displacement: int = 4
 
     # --- Training ------------------------------------------------------------
     # If supervised, then additional MSE loss will be used with ground truth flow
     is_supervised: bool = False
 
     # Total number of passes through the training data.
-    num_epochs: int = 80
+    num_epochs: int = 25
 
     # Number of frame pairs processed together in one forward/backward pass.
     batch_size: int = 32
@@ -66,9 +64,9 @@ class Config:
     # Smoothness regularisation weights
     # See loss.py for the exact formulation.
     # total variation, 1st order derivative
-    smooth_weight: float = 0.01
+    smooth_weight: float = 0.002
     # laplacian, 2nd order derivative
-    laplacian_weight: float = 0.05
+    laplacian_weight: float = 0.005
 
     # Weight of the supervised MSE term
     sup_weight: float = 0.1
@@ -81,7 +79,7 @@ class Config:
     # Number of synthetic pairs used for final evaluation on the test set.
     # These are generated once with a fixed seed (test_seed) and never used
     # during training.
-    n_test_pairs: int = 200
+    n_test_pairs: int = 300
     test_seed:    int = 42       # fixed seed for reproducible test generation
     
     # --- Output -------------------------------------------------------------
@@ -99,7 +97,7 @@ class Config:
     # The cache is automatically invalidated when any generation setting
     # changes: flow_type, max_shift, noise_std, n_pairs_per_frame,
     # val_split, test_split, val_seed, n_test_pairs, or test_seed.
-    dataset_cache_path: str = "synthetic_data/dataset1.h5"
+    dataset_cache_path: str = f"synthetic_data/dataset1_{flow_type}.h5"
 
     # Fixed seed for the VALIDATION set only.
     # Fixing this makes val-loss numbers directly comparable across runs

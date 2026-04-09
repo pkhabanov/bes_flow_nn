@@ -4,7 +4,7 @@ synthetic_data/
 
 # Generated data
 checkpoints*/
-outputs/
+outputs*/
 
 # Python
 __pycache__/

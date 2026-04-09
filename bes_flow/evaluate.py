@@ -7,7 +7,7 @@
 # ─────
 # From the command line:
 #   python -m bes_flow.evaluate \
-#       --data      data/raw/test_frames.npy \
+#       --data      data/raw/test_frames.h5 \
 #       --weights   checkpoints/model_zonal_final.pt \
 #       --output    outputs/evaluation/
 
@@ -22,7 +22,7 @@ from matplotlib.colors import CenteredNorm
 
 from bes_flow.config  import cfg
 from bes_flow.predict import load_model
-from bes_flow.metrics import evaluate as compute_metrics
+from bes_flow.metrics import compute_all_metrics
 from bes_flow.dataset import generate_dataset
 
 

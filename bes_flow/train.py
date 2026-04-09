@@ -38,6 +38,7 @@ import h5py
 from bes_flow.config  import cfg
 from bes_flow.model   import SiameseDisplacementNet
 from bes_flow.model_s import BESFlowNetS
+from bes_flow.model_pwcnet import PWCNet
 from bes_flow.loss    import WarpingL2Loss
 from bes_flow.dataset import make_datasets, make_dataloaders, generate_dataset, BESDataset
 from bes_flow.metrics import (compute_all_metrics, print_summary,
@@ -432,7 +433,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         )
 
         # Per-epoch checkpoint
-        if epoch % 10 == 0:
+        if epoch % 5 == 0:
             torch.save(
                 model.state_dict(),
                 os.path.join(cfg.checkpoint_dir, f"model_{cfg.flow_type}_epoch_{epoch:04d}.pt"),
@@ -466,7 +467,7 @@ def plot_loss_history(history, cfg):
     """
     epochs = np.arange(1, len(history['total']) + 1)
 
-    fig, axes = plt.subplots(2, 4, figsize=(22, 8))
+    fig, axes = plt.subplots(2, 4, figsize=(20, 8))
     fig.suptitle(
         f"Training history  |  flow: {cfg.flow_type}  |  "
         f"epochs: {cfg.num_epochs}  |  lr: {cfg.learning_rate}",
@@ -518,7 +519,7 @@ def plot_curriculum_loss(full_history, stages, cfg):
         cumulative += stage['epochs']
         boundaries.append(cumulative)
 
-    fig, axes = plt.subplots(1, 6, figsize=(22, 4))
+    fig, axes = plt.subplots(2, 4, figsize=(20, 8))
     fig.suptitle(
         f"Curriculum training  |  {cfg.num_epochs} total epochs",
         fontsize=12, fontweight='bold',
@@ -535,7 +536,7 @@ def plot_curriculum_loss(full_history, stages, cfg):
     stage_colors = ['#aec6cf', '#ffda9e', '#b5ead7', '#ffd6e0']
     stage_labels = [s['name'] for s in stages]
 
-    for ax, (key, label, color) in zip(axes, components):
+    for ax, (key, label, color) in zip(axes.flatten()[:len(components)], components):
         values = full_history[key]
         
         # Shade background by stage for immediate visual identification
@@ -752,15 +753,12 @@ if __name__ == '__main__':
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
+    # model = BESFlowNetS()
+    model = PWCNet(max_displacement=cfg.max_displacement)
     if args.checkpoint is not None:
         print(f"\nLoading checkpoint: {args.checkpoint}")
-        model = load_model(args.checkpoint , device, cfg)
+        model = load_model(model, args.checkpoint , device, cfg)
     else:
-        #model = SiameseDisplacementNet(
-        #    feature_channels = cfg.feature_channels,
-        #    max_displacement = cfg.max_displacement,
-        #.to(device)
-        model = BESFlowNetS()
         n_params = sum(p.numel() for p in model.parameters())
         print(f"Model parameters: {n_params:,}\n")
 
@@ -781,7 +779,7 @@ if __name__ == '__main__':
         else:
             optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=cfg.num_epochs
+                optimizer, T_max=cfg.num_epochs*1.25
             )
             print("Starting single-stage training...\n")
             loss_history = train(
@@ -798,9 +796,13 @@ if __name__ == '__main__':
         # ── Evaluate on the test set ──────────────────────────────────────────
         # Load the best checkpoint (lowest val EPE during training).
         #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_best.pt')
-        best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_well_best.pt')
+        #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_well_best.pt')
+        if args.checkpoint is not None:
+            best_ckpt = args.checkpoint
+        else:
+            best_ckpt = 'checkpoints/model_well_best.pt'
         print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
-        model = load_model(best_ckpt, device, cfg)
+        model = load_model(model, best_ckpt, device, cfg)
 
         run_evaluation(
             model,
@@ -810,4 +812,21 @@ if __name__ == '__main__':
             cfg           = cfg,
             output_dir    = os.path.join(cfg.output_dir, 'evaluation'),
         )
+
+        # plot history
+        history_path = 'outputs/train_history_modes.json'
+        with open(history_path, 'r') as file:
+            full_history = json.load(file)
+        total = len(full_history['total'])
+        stages = [
+            {'name': 'Stage 1 — smooth flow', 'flow_type': 'smooth',
+            'epochs': total // 4, 'lr': cfg.learning_rate},
+            {'name': 'Stage 2 — sinusoidal modes',       'flow_type': 'modes',
+            'epochs': total // 4, 'lr': cfg.learning_rate / 2},
+            {'name': 'Stage 3 — zonal sin + turbulence', 'flow_type': 'zonal',
+            'epochs': total // 4, 'lr': cfg.learning_rate / 10},
+            {'name': 'Stage 4 — zonal Gauss well + turb','flow_type': 'well',
+            'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 10},
+            ]
+        plot_curriculum_loss(full_history, stages, cfg)
         

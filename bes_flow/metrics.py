@@ -156,8 +156,6 @@ def evaluate_pair(flow_pred, flow_gt,
     }
 
 
-# Batch aggregation
-
 def compute_all_metrics(flows_pred, flows_gt):
     """
     Compute all metrics for every pair in a test set.
@@ -261,7 +259,7 @@ def plot_metric_distributions(results, flow_type, output_dir):
     plt.tight_layout()
     path = os.path.join(output_dir, 'metric_distributions.png')
     #plt.savefig(path, dpi=150, bbox_inches='tight')
-    #plt.show()
+    plt.show()
     #print(f"Saved: {path}")
 
 
@@ -297,7 +295,7 @@ def plot_epe_vs_displacement(results, output_dir):
     plt.tight_layout()
     path = os.path.join(output_dir, 'epe_vs_displacement.png')
     #plt.savefig(path, dpi=150, bbox_inches='tight')
-    #plt.show()
+    plt.show()
     #print(f"Saved: {path}")
 
 
@@ -331,7 +329,7 @@ def plot_spatial_error_map(flows_pred, flows_gt, output_dir):
     plt.tight_layout()
     path = os.path.join(output_dir, 'spatial_error_map.png')
     #plt.savefig(path, dpi=150, bbox_inches='tight')
-    #plt.show()
+    plt.show()
     #print(f"Saved: {path}")
 
 
@@ -409,5 +407,5 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
 
     path = os.path.join(output_dir, 'qualitative_examples.png')
     #plt.savefig(path, dpi=150, bbox_inches='tight')
-    #plt.show()
+    plt.show()
     #print(f"Saved: {path}")
