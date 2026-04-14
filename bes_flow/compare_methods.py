@@ -30,6 +30,7 @@ import cv2
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import CenteredNorm
+import math
 
 import torch
 import torch.nn.functional as F
@@ -40,6 +41,7 @@ from bes_flow.model_s import BESFlowNetS
 from bes_flow.dataset import load_dataset_cache, BESDataset
 from bes_flow.metrics import compute_all_metrics
 from bes_flow.train   import predict_dataset
+from bes_flow.odp import odp_chunk
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +56,7 @@ def load_pwc(weights_path, device):
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.eval()
     n = sum(p.numel() for p in model.parameters())
-    print(f"  Loaded PWCNet  ({n:,} params)  ← {weights_path}")
+    print(f"\n  Loaded PWCNet  ({n:,} params)  ← {weights_path}")
     return model
 
 
@@ -64,7 +66,7 @@ def load_flownets(weights_path, device):
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.eval()
     n = sum(p.numel() for p in model.parameters())
-    print(f"  Loaded BESFlowNetS             ({n:,} params)  ← {weights_path}")
+    print(f"\n  Loaded BESFlowNetS             ({n:,} params)  ← {weights_path}")
     return model
 
 
@@ -97,7 +99,7 @@ def run_farneback(framesA, framesB):
     H, W  = framesA.shape[2], framesA.shape[3]
     flows = np.zeros((N, 2, H, W), dtype=np.float32)
 
-    print("  Running Farneback...")
+    print("\n  Running Farneback...")
     for i in range(N):
         fA = (framesA[i, 0] * 255).astype(np.uint8)
         fB = (framesB[i, 0] * 255).astype(np.uint8)
@@ -129,7 +131,7 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
             "Install with: pip install torchvision>=0.13"
         )
 
-    print("  Loading RAFT-small (pretrained weights)...")
+    print("\n  Loading RAFT-small (pretrained weights)...")
     raft = raft_small(weights=Raft_Small_Weights.DEFAULT).to(device)
     raft.eval()
 
@@ -154,40 +156,41 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
     return flows
 
 
-def run_odp(framesA, framesB):
+def run_odp(framesA, framesB, nstep='default', smooth=15, mframe=2, mx='default', my='default'):
     """
-    Placeholder for the ODP (Orthogonal Dynamic Programming) algorithm.
-
-    Replace the body of this function with your ODP() call.
-    Expected output shape: (N, 2, H, W) float32 in pixels,
+    framesA, framesB shape (n_pairs, 1, H, W)
+    flows output shape: (N, 2, H, W) float32 in pixels,
     channel 0 = dx, channel 1 = dy.
 
-    Typical call pattern:
-        flow_odp = ODP(fA, fB)     # (H, W, 2) or (2, H, W)
-        if flow_odp.shape == (H, W, 2):
-            flows[i, 0] = flow_odp[:, :, 0]
-            flows[i, 1] = flow_odp[:, :, 1]
-        else:
-            flows[i] = flow_odp
     """
-    N     = len(framesA)
-    H, W  = framesA.shape[2], framesA.shape[3]
-    flows = np.zeros((N, 2, H, W), dtype=np.float32)
+    N, ny, nx  = framesA.shape[0], framesA.shape[2], framesA.shape[3]
+    flows = np.zeros((N, 2, ny, nx), dtype=np.float32)
 
-    print("  Running ODP...")
+    # format inputs
+    nstep_val = None if nstep == 'default' else int(nstep)
+    mx_val = None if mx == 'default' else int(mx)
+    my_val = None if my == 'default' else int(my)
+    sm_param = int(smooth)
+    m_frame = int(mframe)
+    
+    if nstep_val is None: nstep_val = int(2.0 * math.log(nx / 10.0) / math.log(2.0) + 0.5)
+    if mx_val is None: mx_val = int((nx / 6.0) / 2 + 0.5) * 2 + 1
+    if my_val is None: my_val = int((ny / 6.0) / 2 + 0.5) * 2 + 1
+    
+    print("\n  Running ODP...")
+    print(f"n_steps: {nstep_val} | smooth: {sm_param} | mframe: {m_frame} | mx: {mx_val} | my: {my_val}")
+    # loop over image pairs
     for i in range(N):
-        fA = framesA[i, 0]   # (H, W) float32 in [0, 1]
-        fB = framesB[i, 0]   # (H, W) float32 in [0, 1]
-
-        # ── replace this block ──────────────────────────────────────────
-        # flow_odp = ODP(fA, fB)
-        # flows[i, 0] = ...
-        # flows[i, 1] = ...
-        # ────────────────────────────────────────────────────────────────
-
-        raise NotImplementedError(
-            "ODP placeholder — fill in run_odp() before running this script."
-        )
+        # Build [nx, ny, 2] slice for this pair
+        img_slice = np.stack([framesA[i, 0], framesB[i, 0]], axis=0)   # [2, ny, nx]
+        img_slice = np.transpose(img_slice, (2, 1, 0)).astype(np.float32)  # [nx, ny, 2]
+        np.nan_to_num(img_slice, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        vx, vy = odp_chunk(img_slice, nstep_val, sm_param, m_frame, mx_val, my_val)
+    
+        # vx, vy shape: [nx, ny, 1] -> transpose to [1, ny, nx] -> squeeze
+        flows[i, 0] = np.transpose(vx, (2, 1, 0))[0]
+        flows[i, 1] = np.transpose(vy, (2, 1, 0))[0]
 
     return flows
 
@@ -383,7 +386,7 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
     plt.show()
     plt.close('all')
     print(f"Saved: {path}")
-    
+
 
 if __name__ == '__main__':
 
