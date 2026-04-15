@@ -137,9 +137,12 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
 
     N     = len(framesA)
     H, W  = framesA.shape[2], framesA.shape[3]
+    H_up, W_up = 128, 128  # RAFT minimum resolution
+    scale = H / H_up  # 0.5 — pixel rescaling factor
+
     flows = np.zeros((N, 2, H, W), dtype=np.float32)
 
-    print("  Running RAFT-small...")
+    print("\n  Running RAFT-small...")
     with torch.no_grad():
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)
@@ -148,9 +151,20 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
             bA = torch.tensor(framesA[start:end]).repeat(1, 3, 1, 1).to(device)
             bB = torch.tensor(framesB[start:end]).repeat(1, 3, 1, 1).to(device)
 
+            bA = F.interpolate(bA, size=(H_up, W_up), mode='bilinear',
+                               align_corners=False)
+            bB = F.interpolate(bB, size=(H_up, W_up), mode='bilinear',
+                               align_corners=False)
+
             # RAFT returns a list of iterative flow estimates; take the last
-            flow_predictions = raft(bA, bB)
-            flows[start:end] = flow_predictions[-1].cpu().numpy()
+            flow_predictions = raft(bA, bB)[-1]
+            # Downsample back to 64x64 and rescale pixel values
+            # Take into account flow scaling: 
+            # A displacement of d px in 128x128 = d * (H / H_up) px in 64x64.
+            flow_down = F.interpolate(flow_predictions, size=(H, W), mode='bilinear',
+                                      align_corners=False)
+            flow_down = flow_down * scale
+            flows[start:end] = flow_down.cpu().numpy()
 
     del raft
     return flows
