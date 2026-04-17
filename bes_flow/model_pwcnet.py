@@ -166,7 +166,7 @@ class FlowEstimator(nn.Module):
     """
     Multi-layer CNN with DenseNet connections that estimates a dense flow
     field from the concatenated cost volume, frame-1 features, and
-    upsampled flow + upfeat from the coarser level.
+    upsampled flow.
 
     RETURNS
     ───────
@@ -175,7 +175,7 @@ class FlowEstimator(nn.Module):
 
     Parameters
     ----------
-    in_channels  : total input width (n_cost + feat_ch + optional up_flow+upfeat)
+    in_channels  : total input width (n_cost + feat_ch + optional up_flow)
     mid_channels : tuple (c0, c1, c2); scaled-down from original PWCnet (128,128,96,64,32)
     """
 
@@ -187,7 +187,7 @@ class FlowEstimator(nn.Module):
         self.conv0   = _conv_lrelu(in_channels,             c0)
         self.conv1   = _conv_lrelu(in_channels + c0,        c1)
         self.conv2   = _conv_lrelu(in_channels + c0 + c1,   c2)
-        self.predict = nn.Conv2d(c2, 2, kernel_size=1)
+        self.predict = nn.Conv2d(self._full_ch, 2, kernel_size=1)
 
     @property
     def full_channels(self) -> int:
@@ -204,34 +204,7 @@ class FlowEstimator(nn.Module):
         x1        = self.conv1(torch.cat([x,  x0],     dim=1))
         x2        = self.conv2(torch.cat([x,  x0, x1], dim=1))
         full_feat = torch.cat([x, x0, x1, x2],          dim=1)  # accumulate all
-        return self.predict(x2), full_feat
-
-
-class UpFeat(nn.Module):
-    """
-    Compresses the full accumulated feature tensor from a coarser estimator
-    and upsamples it x2 to the next finer pyramid level.
-
-    Parameters
-    ----------
-    in_channels  : full_feat channels from the coarser FlowEstimator
-    out_channels : compressed width; default 2 (matches original upfeat)
-    """
-
-    def __init__(self, in_channels: int, out_channels: int = 2):
-        super().__init__()
-        # 1×1 conv: compress from full accumulated width down to out_channels
-        self.compress = nn.Conv2d(in_channels, out_channels,
-                                  kernel_size=1, bias=True)
-
-    def forward(self, full_feat: torch.Tensor) -> torch.Tensor:
-        """
-        full_feat : (B, in_channels, H, W)
-        upsampled : (B, out_channels, 2H, 2W)
-        """
-        compressed = self.compress(full_feat)
-        return F.interpolate(compressed, scale_factor=2,
-                             mode='bilinear', align_corners=True)
+        return self.predict(full_feat), full_feat
 
 
 class ContextNetwork(nn.Module):
@@ -273,29 +246,25 @@ class PWCNet(nn.Module):
     """
     PWC-Net adapted for 64x64 BES plasma velocimetry.
 
-    Channel budget  (d=4, n_cost=81, upfeat_ch=2)
+    Channel budget  (d=4, n_cost=81)
     ─────────────────────────────────────────────
-    Estimator3: in = 81+64       = 145  full_feat = 145+64+32+16 = 257
-    UpFeat3:    257 -> 2, x2 -> (B, 2, 16, 16)
-    Estimator2: in = 81+32+2+2  = 117  full_feat = 117+64+32+16 = 229
-    UpFeat2:    229 -> 2, x2 -> (B, 2, 32, 32)
-    Estimator1: in = 81+16+2+2  = 101  full_feat = 101+64+32+16 = 213
-    ContextNet: in = 213
+    FlowEstimator3: in = 81+64   = 145  full_feat = 145+64+32+16 = 257
+    FlowEstimator2: in = 81+32+2 = 115  full_feat = 115+64+32+16 = 227
+    FlowEstimator1: in = 81+16+2  = 99  full_feat = 99+64+32+16 = 211
+    ContextNet: in = 211
 
     Parameters
     ----------
     max_displacement : cost-volume search radius d.  Default 4 -> 81 ch.
-    upfeat_channels  : channels in the compressed UpFeat tensor.  Default 2.
     """
 
     _MID = (64, 32, 16)   # estimator hidden channels at all levels
 
-    def __init__(self, max_displacement: int = 4, upfeat_channels: int = 2):
+    def __init__(self, max_displacement: int = 4):
         super().__init__()
 
         self.d  = max_displacement
-        self.uf = upfeat_channels
-        d,  uf  = self.d, self.uf
+        d = self.d
         n_cost  = (2 * d + 1) ** 2   # 81
 
         # ── Shared feature pyramid (Siamese) ──────────────────────────────
@@ -307,27 +276,23 @@ class PWCNet(nn.Module):
         # ── Flow estimators — independent per level ────────────────────────
         # L3: no prior flow -> cost + c3A only
         self.estimator3 = FlowEstimator(
-            in_channels  = n_cost + 64,            # 145
+            in_channels  = n_cost + 64,  # 145
             mid_channels = self._MID,
         )
-        # L2: cost + c2A + up_flow3 + upfeat3
+        # L2: cost + c2A + up_flow3
         self.estimator2 = FlowEstimator(
-            in_channels  = n_cost + 32 + 2 + uf,  # 117
+            in_channels  = n_cost + 32 + 2,  # 115
             mid_channels = self._MID,
         )
-        # L1: cost + c1A + up_flow2 + upfeat2
+        # L1: cost + c1A + up_flow2
         self.estimator1 = FlowEstimator(
-            in_channels  = n_cost + 16 + 2 + uf,  # 101
+            in_channels  = n_cost + 16 + 2,  # 99
             mid_channels = self._MID,
         )
-
-        # ── UpFeat: compress & upsample full estimator features ────────────
-        self.upfeat3 = UpFeat(self.estimator3.full_channels, uf)  # 257 -> uf
-        self.upfeat2 = UpFeat(self.estimator2.full_channels, uf)  # 229 -> uf
 
         # ── Context network — applied at L1 only ──────────────────────────
         self.context_net = ContextNetwork(
-            in_channels  = self.estimator1.full_channels,  # 213
+            in_channels  = self.estimator1.full_channels,  # 211
             mid_channels = 64,
         )
 
@@ -373,24 +338,22 @@ class PWCNet(nn.Module):
         cost3              = self.cost_volume(c3A, c3B)        # (B, 81,  8,  8)
         inp3               = torch.cat([cost3, c3A], dim=1)    # (B,145,  8,  8)
         flow3, full_feat3  = self.estimator3(inp3)             # (B,2/257,8,  8)
-        upfeat3_up         = self.upfeat3(full_feat3)          # (B,  2, 16, 16)
 
         # ── L2 (16×16) ────────────────────────────────────────────────────
         up_flow3           = self._upsample_flow(flow3)        # (B,  2, 16, 16)
         c2B_warped         = warp(c2B, up_flow3)
         cost2              = self.cost_volume(c2A, c2B_warped) # (B, 81, 16, 16)
-        inp2               = torch.cat(                        # (B,117, 16, 16)
-                               [cost2, c2A, up_flow3, upfeat3_up], dim=1)
-        flow2, full_feat2  = self.estimator2(inp2)             # (B,2/229,16,16)
-        upfeat2_up         = self.upfeat2(full_feat2)          # (B,  2, 32, 32)
+        inp2               = torch.cat(                        # (B,115, 16, 16)
+                               [cost2, c2A, up_flow3], dim=1)
+        flow2, full_feat2  = self.estimator2(inp2)             # (B,2/227,16,16)
 
         # ── L1 (32×32): finest active level ──────────────────────────────
         up_flow2           = self._upsample_flow(flow2)        # (B,  2, 32, 32)
         c1B_warped         = warp(c1B, up_flow2)
         cost1              = self.cost_volume(c1A, c1B_warped) # (B, 81, 32, 32)
-        inp1               = torch.cat(                        # (B,101, 32, 32)
-                               [cost1, c1A, up_flow2, upfeat2_up], dim=1)
-        flow1, full_feat1  = self.estimator1(inp1)             # (B,2/213,32,32)
+        inp1               = torch.cat(                        # (B,99, 32, 32)
+                               [cost1, c1A, up_flow2], dim=1)
+        flow1, full_feat1  = self.estimator1(inp1)             # (B,2/211,32,32)
 
         # ── Context network: dilated refinement at 32×32 ─────────────────
         flow1_refined      = self.context_net(flow1, full_feat1)  # (B, 2, 32, 32)
@@ -408,7 +371,7 @@ if __name__ == '__main__':
     model = PWCNet(max_displacement=4)
 
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"PWCNet  |  parameters: {n_params:,}")
+    print(f"\nPWCNet  |  parameters: {n_params:,}")
 
     B  = 4
     fA = torch.randn(B, 1, 64, 64)
@@ -418,7 +381,7 @@ if __name__ == '__main__':
     model.train()
     out = model(fA, fB)
     assert out.shape == (B, 2, 64, 64), f"Bad shape: {out.shape}"
-    print(f"Training output     : {out.shape}  ✓")
+    print(f"Training output     : {out.shape}  +")
 
     expected_pyramid_shapes = [
         (B, 2,  8,  8),
@@ -429,7 +392,7 @@ if __name__ == '__main__':
     for i, (got, want) in enumerate(
             zip([f.shape for f in model.flow_pyramid], expected_pyramid_shapes)):
         assert got == want, f"Pyramid[{i}]: got {got}, want {want}"
-    print(f"flow_pyramid shapes : {[f.shape for f in model.flow_pyramid]}  ✓")
+    print(f"flow_pyramid shapes : {[f.shape for f in model.flow_pyramid]}  +")
 
     # ── Gradient flow through all components ─────────────────────────────────
     loss = out.mean()
@@ -437,13 +400,13 @@ if __name__ == '__main__':
     no_grad = [n for n, p in model.named_parameters()
                if p.requires_grad and p.grad is None]
     assert not no_grad, f"No gradient for: {no_grad}"
-    print(f"Gradients to all parameters  ✓")
+    print(f"Gradients to all parameters  +")
 
     # ── Eval-mode output ──────────────────────────────────────────────────────
     model.eval()
     with torch.no_grad():
         out_eval = model(fA, fB)
     assert out_eval.shape == (B, 2, 64, 64)
-    print(f"Eval output         : {out_eval.shape}  ✓")
+    print(f"Eval output         : {out_eval.shape}  +")
 
     print("\nAll checks passed.")

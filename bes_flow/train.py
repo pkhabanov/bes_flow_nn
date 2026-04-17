@@ -614,10 +614,10 @@ def curriculum_train(model, train_frames, val_frames, loss_fn, cfg, device):
          'epochs': total // 4,              'lr': cfg.learning_rate},
         {'name': 'Stage 2 — sinusoidal modes',       'flow_type': 'modes',
          'epochs': total // 4,              'lr': cfg.learning_rate / 2},
-        {'name': 'Stage 3 — zonal sin + turbulence', 'flow_type': 'zonal',
-         'epochs': total // 4,              'lr': cfg.learning_rate / 10},
-        {'name': 'Stage 4 — zonal Gauss well + turb','flow_type': 'well',
-         'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 10},
+        {'name': 'Stage 3 — zonal Gauss well + turb','flow_type': 'well',
+         'epochs': total // 4,              'lr': cfg.learning_rate / 2},
+        {'name': 'Stage 4 — zonal sin + turbulence', 'flow_type': 'zonal',
+         'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 2},
     ]
 
     # Build a per-stage cache path by inserting the flow_type before the
@@ -697,7 +697,7 @@ def curriculum_train(model, train_frames, val_frames, loss_fn, cfg, device):
         del stage_train_ds, stage_val_ds
 
     # Plot the full curriculum loss history
-    plot_curriculum_loss(full_history, stages, cfg)
+    #plot_curriculum_loss(full_history, stages, cfg)
     return full_history
 
 
@@ -712,6 +712,8 @@ if __name__ == '__main__':
                         help='Use to skip training')
     parser.add_argument('--checkpoint', type=str,
                         help='Load model checkpoint to start with')
+    parser.add_argument('--model', type=str, default='pwc',
+                        help='Model type: pwc or flownet')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -753,8 +755,12 @@ if __name__ == '__main__':
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    # model = BESFlowNetS()
-    model = PWCNet(max_displacement=cfg.max_displacement)
+    if args.model == 'flownet':
+        print('Initializing BESFlowNetS')
+        model = BESFlowNetS()
+    elif args.model == 'pwc':
+        print('Initializing PWCNet')
+        model = PWCNet(max_displacement=cfg.max_displacement)
     if args.checkpoint is not None:
         print(f"\nLoading checkpoint: {args.checkpoint}")
         model = load_model(model, args.checkpoint , device, cfg)

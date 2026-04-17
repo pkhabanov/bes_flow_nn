@@ -140,7 +140,7 @@ def zonal_plus_turbulence_flow(H, W,
     if profile_type == 'sin':
         # Smooth sinusoidal variation of y-velocity across the x (radial) axis.
         # add small random phase shift
-        x_coords = np.linspace(0, 2 * np.pi, W, dtype=np.float32) + np.pi * np.random.uniform(-0.25, 0.25)
+        x_coords = np.linspace(0, 2 * np.pi, W, dtype=np.float32) + np.pi * np.random.uniform(-0.5, 0.5)
         zonal_profile = np.sin(x_coords)  # (W,) — radial profile
     elif profile_type == 'well':
         # Gaussian profile (Er well approximation)
