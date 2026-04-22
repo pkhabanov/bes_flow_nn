@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import CenteredNorm
 import h5py
+from dataclasses import replace
 
 from bes_flow.config  import cfg
 from bes_flow.model   import SiameseDisplacementNet
@@ -615,8 +616,6 @@ def curriculum_train(model, train_frames, val_frames, loss_fn, cfg, device):
     -------
     full_history : dict — loss history concatenated across all stages
     """
-    from dataclasses import replace
-
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
     os.makedirs(cfg.output_dir,     exist_ok=True)
 
@@ -792,7 +791,6 @@ if __name__ == '__main__':
             train_dataset, val_dataset, test_dataset = make_datasets(
                 train_frames, val_frames, test_frames, cfg
             )
-
             # ── Build DataLoaders ─────────────────────────────────────────────────
             train_loader, val_loader, test_loader = make_dataloaders(
                 train_dataset, val_dataset, test_dataset, cfg
@@ -813,42 +811,45 @@ if __name__ == '__main__':
         # save history to json
         with open(history_path, 'w') as f:
             json.dump(loss_history, f, indent=2)
+    
+    # ── Evaluate on the test set ──────────────────────────────────────────
+    # get test data
+    train_dataset, val_dataset, test_dataset = make_datasets(
+                train_frames, val_frames, test_frames, cfg
+            )
+    # get model checkpoint
+    if args.checkpoint is not None:
+        best_ckpt = args.checkpoint
     else:
-        # ── Evaluate on the test set ──────────────────────────────────────────
-        # Load the best checkpoint (lowest val EPE during training).
-        #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_best.pt')
-        #best_ckpt = os.path.join(cfg.checkpoint_dir, 'model_well_best.pt')
-        if args.checkpoint is not None:
-            best_ckpt = args.checkpoint
-        else:
-            best_ckpt = 'checkpoints/model_well_best.pt'
-        print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
-        model = load_model(model, best_ckpt, device, cfg)
+        # Load the best checkpoint (lowest val EPE during training)
+        best_ckpt = f'checkpoints/model_{cfg.flow_type}_best.pt'
+    print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
+    model = load_model(model, best_ckpt, device, cfg)
 
-        run_evaluation(
-            model,
-            test_dataset  = test_dataset,
-            test_frames   = test_frames,
-            device        = device,
-            cfg           = cfg,
-            output_dir    = os.path.join(cfg.output_dir, 'evaluation'),
-            plot_results  = args.plot_results,
-        )
+    run_evaluation(
+        model,
+        test_dataset  = test_dataset,
+        test_frames   = test_frames,
+        device        = device,
+        cfg           = cfg,
+        output_dir    = os.path.join(cfg.output_dir, 'evaluation'),
+        plot_results  = args.plot_results,
+    )
 
-        # plot history
-        if args.plot_results:
-            history_path = 'outputs/train_history_modes.json'
-            with open(history_path, 'r') as file:
-                full_history = json.load(file)
-            total = len(full_history['total'])
-            stages = [
-                {'name': 'Stage 1 — smooth flow', 'flow_type': 'smooth',
-                'epochs': total // 4, 'lr': cfg.learning_rate},
-                {'name': 'Stage 2 — sinusoidal modes',       'flow_type': 'modes',
-                'epochs': total // 4, 'lr': cfg.learning_rate / 2},
-                {'name': 'Stage 3 — zonal sin + turbulence', 'flow_type': 'zonal',
-                'epochs': total // 4, 'lr': cfg.learning_rate / 10},
-                {'name': 'Stage 4 — zonal Gauss well + turb','flow_type': 'well',
-                'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 10},
-                ]
-            plot_curriculum_loss(full_history, stages, cfg)
+    # plot history
+    if args.plot_results:
+        history_path = 'outputs/train_history_modes.json'
+        with open(history_path, 'r') as file:
+            full_history = json.load(file)
+        total = len(full_history['total'])
+        stages = [
+            {'name': 'Stage 1 — smooth flow', 'flow_type': 'smooth',
+            'epochs': total // 4, 'lr': cfg.learning_rate},
+            {'name': 'Stage 2 — sinusoidal modes',       'flow_type': 'modes',
+            'epochs': total // 4, 'lr': cfg.learning_rate / 2},
+            {'name': 'Stage 3 — zonal sin + turbulence', 'flow_type': 'zonal',
+            'epochs': total // 4, 'lr': cfg.learning_rate / 10},
+            {'name': 'Stage 4 — zonal Gauss well + turb','flow_type': 'well',
+            'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 10},
+            ]
+        plot_curriculum_loss(full_history, stages, cfg)
