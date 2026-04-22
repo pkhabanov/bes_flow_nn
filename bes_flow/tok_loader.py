@@ -111,6 +111,7 @@ if __name__ == "__main__":
     
     print(f'\nLoading BES data for #{shot}')
     raw_bes_ds = raw_bes_pipeline([shot]).compute_serial()[0]
+    print(raw_bes_ds)
     filter_ds = preprocessing_pipeline([shot]).compute_serial()[0]
 
     #print(raw_bes_ds)

@@ -532,7 +532,7 @@ class BESDataset(Dataset):
                 flow = torch.stack([flow[1], -flow[0]], dim=0)
 
         # 4. Intensity jitter
-        gain = 0.95 + 0.10 * torch.rand(1).item()
+        gain = 0.85 + 0.30 * torch.rand(1).item()
         fA   = (fA * gain).clamp(0.0, 1.0)
         fB   = (fB * gain).clamp(0.0, 1.0)
 

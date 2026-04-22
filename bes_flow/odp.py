@@ -392,7 +392,7 @@ def odp_chunk(image_slice, nsteps, smooth_param, m_frame, mx_init, my_init):
                         cy[ii, jj] = iy2d[ii, jj] + vy_out[ii, jj, frame]
                 image_warp[:, :, i] = map_coordinates(image_slice[:, :, frame + i], cx, cy)
 
-# ODP in x-direction
+            # ODP in x-direction
             x_steps = int(2.0 * ny / x_width - 1.0)
             temp_x = np.zeros((nx, x_steps), dtype=np.float32)
 
