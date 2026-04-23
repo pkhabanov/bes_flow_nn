@@ -156,7 +156,7 @@ def zonal_plus_turbulence_flow(H, W,
         )
     
     # y-component varies with x
-    zonal_dy = np.random.uniform(0.7*zonal_amplitude, zonal_amplitude) * zonal_profile 
+    zonal_dy = np.random.choice([1, -1]) * np.random.uniform(0.7*zonal_amplitude, zonal_amplitude) * zonal_profile 
     # no radial zonal component
     zonal_dx = np.zeros(W, dtype=np.float32)       
 
@@ -304,8 +304,6 @@ def generate_dataset(frames, n_pairs_per_frame, max_shift,
             else:
                 framesA[idx, 0] = image
                 framesB[idx, 0] = warped
-
-            ### jointly normalize the pair after warping
 
             flows_gt[idx, :, :, :] = flow
             idx += 1

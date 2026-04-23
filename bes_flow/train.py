@@ -104,17 +104,21 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
     Bar chart comparing mean EPE and rEPE across all four flow types.
 
     Tests whether the model generalises beyond the flow type it was trained
-    on.  Uses 50 freshly generated pairs per flow type from test_frames.
+    on.  Uses N freshly generated pairs per flow type from test_frames.
     """
-    flow_types = ['smooth', 'modes', 'zonal', 'well']
+    flow_types = ['smooth', 'modes', 'well', 'zonal',]
     epe_means, epe_stds, repe_means = [], [], []
     
+    # accumalate predicted and gt flows
+    flows_pred = []
+    flows_gt = []
+
     # Accumulate one random sample per flow type for the qualitative figure.
     samples = []   # list of (flow_type, fA, fB, gt, pred, mean_epe) per type
 
     for ft in flow_types:
         fA, fB, gt = _generate_test_set_for_flow_type(
-            test_frames, ft, cfg, n_pairs=50
+            test_frames, ft, cfg, n_pairs=200
         )
         tmp_ds  = BESDataset(fA, fB, gt, augment=False)
         pred    = predict_dataset(model, tmp_ds, device)
@@ -122,6 +126,9 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
         epe_means.append(metrics['EPE'].mean())
         epe_stds.append(metrics['EPE'].std())
         repe_means.append(metrics['rEPE'].mean() * 100)
+
+        flows_pred.append(pred)
+        flows_gt.append(gt)
 
         # Pick one random pair index
         idx = np.random.randint(len(fA))
@@ -137,7 +144,7 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
 
     # fig1 - bar charts
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    fig.suptitle('Performance across flow types', fontsize=13, fontweight='bold')
+    fig.suptitle('Performance across flow types', fontsize=16, fontweight='bold')
 
     axes[0].bar(x, epe_means, yerr=epe_stds, color=colors,
                 capsize=5, edgecolor='black', alpha=0.8)
@@ -170,7 +177,7 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
  
     fig = plt.figure(figsize=(20, 4 * n_rows))
     fig.suptitle('Qualitative examples across flow types  —  one random pair per type',
-                 fontsize=13, fontweight='bold')
+                 fontsize=16, fontweight='bold')
  
     gs = gridspec.GridSpec(n_rows, 5, figure=fig, hspace=0.35, wspace=0.25)
  
@@ -178,7 +185,7 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
                   'EPE  vx  (px)', 'EPE  vy  (px)']
  
     for row, (ft, fA, fB, gt, pred, epe_val) in enumerate(samples):
-        # Per-component absolute errors (H, W)
+        # Per-component errors (H, W)
         #epe_vx = np.abs(pred[0] - gt[0])   # |Δdx|
         #epe_vy = np.abs(pred[1] - gt[1])   # |Δdy|
         diff_vx = pred[0] - gt[0]   # (H, W)
@@ -193,7 +200,7 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
         # col 0 — Frame A
         ax0 = fig.add_subplot(gs[row, 0])
         ax0.imshow(fA, cmap='inferno', origin='upper')
-        ax0.set_ylabel(f'{ft}\nEPE={epe_val:.3f} px', fontsize=9)
+        ax0.set_ylabel(f'{ft}\nEPE={epe_val:.3f} px', fontsize=12)
         if row == 0:  ax0.set_title(col_titles[0])
         ax0.set_xticks([]);  ax0.set_yticks([])
  
@@ -234,10 +241,16 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
         ax4.set_xticks([]);  ax4.set_yticks([])
  
     path2 = os.path.join(output_dir, 'cross_flow_examples.png')
-    plt.savefig(path2, dpi=150, bbox_inches='tight')
+    #plt.savefig(path2, dpi=150, bbox_inches='tight')
+    #print(f"Saved: {path2}")
+
+    # fig3 - EPE maps
+    flows_pred = np.concatenate(flows_pred, axis=0)
+    flows_gt = np.concatenate(flows_gt, axis=0)
+    plot_spatial_error_map(flows_pred, flows_gt, '')
+
     plt.show()
     plt.close('all')
-    print(f"Saved: {path2}")
 
 
 def run_evaluation(model, test_dataset, test_frames, device, cfg, output_dir, plot_results=True):
@@ -475,7 +488,7 @@ def plot_loss_history(history, cfg):
     fig.suptitle(
         f"Training history  |  flow: {cfg.flow_type}  |  "
         f"epochs: {cfg.num_epochs}  |  lr: {cfg.learning_rate}",
-        fontsize=12, fontweight='bold',
+        fontsize=14, fontweight='bold',
     )
 
     components = [
@@ -498,7 +511,7 @@ def plot_loss_history(history, cfg):
                 color=color, linewidth=2.5, linestyle='--', alpha=0.9,
                 label=f'Running mean (w={window})')
         ax.set_xlabel('Epoch');  ax.set_ylabel(ylabel)
-        ax.set_title(label);     ax.legend(fontsize=8)
+        ax.set_title(label);     ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3);  ax.set_xlim(1, len(epochs))
 
     axes[1, 3].set_visible(False)
@@ -523,9 +536,9 @@ def plot_curriculum_loss(full_history, stages, cfg):
         cumulative += stage['epochs']
         boundaries.append(cumulative)
 
-    fig, axes = plt.subplots(2, 4, figsize=(20, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(20, 8))
     fig.suptitle(
-        f"Curriculum training  |  {cfg.num_epochs} total epochs",
+        f"Curriculum training  |  {epochs[-1]} total epochs",
         fontsize=12, fontweight='bold',
     )
 
@@ -537,7 +550,7 @@ def plot_curriculum_loss(full_history, stages, cfg):
         ('val_total',   'Total loss (val)',    'crimson'),
         ('val_epe',     'Val EPE  (px)',       'teal'),
     ]
-    stage_colors = ['#aec6cf', '#ffda9e', '#b5ead7', '#ffd6e0']
+    stage_colors = ['#ccddaa', '#cceeff', '#eeeebb', '#ffcccc']
     stage_labels = [s['name'] for s in stages]
 
     for ax, (key, label, color) in zip(axes.flatten()[:len(components)], components):
@@ -548,25 +561,26 @@ def plot_curriculum_loss(full_history, stages, cfg):
         for boundary, bg, slabel in zip(
             boundaries + [len(epochs)], stage_colors, stage_labels
         ):
-            ax.axvspan(prev, boundary, alpha=0.15, color=bg, label=slabel)
+            ax.axvspan(prev, boundary, alpha=0.2, color=bg, label=slabel)
             prev = boundary
         
         # Loss curve + running mean
-        ax.plot(epochs, values, color=color, linewidth=1.2, alpha=0.5)
-        window       = max(1, len(epochs) // 10)
-        running_mean = np.convolve(values, np.ones(window) / window, mode='valid')
-        ax.plot(epochs[window - 1:], running_mean,
-                color=color, linewidth=2.5, linestyle='--', alpha=0.9)
+        ax.plot(epochs, values, color='k', linewidth=2, alpha=0.8)
+        #window       = max(1, len(epochs) // 10)
+        #running_mean = np.convolve(values, np.ones(window) / window, mode='valid')
+        #ax.plot(epochs[window - 1:], running_mean,
+        #        color='r', linewidth=2.5, linestyle='--', alpha=0.9)
         
         # Vertical lines at stage transitions
         for b in boundaries:
             ax.axvline(b, color='black', linewidth=1.0, linestyle=':', alpha=0.7)
 
-        ax.set_xlabel('Epoch');  ax.set_ylabel('Loss')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
         ax.set_title(label)
-        ax.legend(fontsize=7, loc='upper right')
-        ax.grid(True, alpha=0.3);  ax.set_xlim(1, len(epochs))
-
+        ax.grid(True, alpha=0.3)  
+        ax.set_xlim(1, len(epochs))
+    axes[0, 0].legend(fontsize=12, loc='upper right')
     plt.tight_layout()
     plt.show()
     #plot_path = os.path.join(cfg.output_dir, 'curriculum_loss_history.png')
@@ -574,7 +588,7 @@ def plot_curriculum_loss(full_history, stages, cfg):
     #print(f"\nCurriculum loss plot saved to {plot_path}")
 
 
-def resolve_cache_path(base: str | None, flow_type: str) -> str | None:
+def resolve_cache_path(base, flow_type):
     ''' Build a per-stage cache path by inserting the flow_type before the
     file extension. If no cache path is configured, all stages run without caching.
     '''
@@ -838,7 +852,7 @@ if __name__ == '__main__':
 
     # plot history
     if args.plot_results:
-        history_path = 'outputs/train_history_modes.json'
+        history_path = 'outputs-flownet/train_history_curriculum.json'
         with open(history_path, 'r') as file:
             full_history = json.load(file)
         total = len(full_history['total'])
@@ -846,10 +860,10 @@ if __name__ == '__main__':
             {'name': 'Stage 1 — smooth flow', 'flow_type': 'smooth',
             'epochs': total // 4, 'lr': cfg.learning_rate},
             {'name': 'Stage 2 — sinusoidal modes',       'flow_type': 'modes',
-            'epochs': total // 4, 'lr': cfg.learning_rate / 2},
-            {'name': 'Stage 3 — zonal sin + turbulence', 'flow_type': 'zonal',
-            'epochs': total // 4, 'lr': cfg.learning_rate / 10},
-            {'name': 'Stage 4 — zonal Gauss well + turb','flow_type': 'well',
-            'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 10},
+            'epochs': total // 4, 'lr': cfg.learning_rate / 2 },
+            {'name': 'Stage 3 — zonal Gauss well + turb','flow_type': 'well',
+            'epochs': total // 4, 'lr': cfg.learning_rate / 2 },
+            {'name': 'Stage 4 — zonal sin + turbulence', 'flow_type': 'zonal',
+            'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 2},
             ]
         plot_curriculum_loss(full_history, stages, cfg)

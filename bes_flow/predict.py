@@ -71,7 +71,7 @@ def load_model(model, weights_path, device, cfg=cfg):
 
 def preprocess_frame(frame):
     """
-    Normalise a single 2-D BES frame to [0, 1] and convert to a
+    Normalize a single 2-D BES frame to [0, 1] and convert to a
     (1, 1, H, W) PyTorch tensor ready for the network.
 
     Parameters
@@ -90,8 +90,8 @@ def preprocess_frame(frame):
 
 def preprocess_pair(frameA, frameB):
     """
-    Normalise two consecutive BES frames jointly to [0, 1].
-    Joint normalisation uses the combined min/max of both frames, so their
+    Normalize two consecutive BES frames jointly to [0, 1].
+    Joint normalization uses the combined min/max of both frames, so their
     relative intensities are preserved
  
     Parameters
@@ -176,7 +176,7 @@ def predict_sequence(model, frames, device, batch_size=16):
             batchA_np = frames[start  : end    ].astype(np.float32)  # (B, H, W)
             batchB_np = frames[start+1: end + 1].astype(np.float32)  # (B, H, W)
  
-            # Joint normalisation per pair: compute min/max over each (A,B) pair
+            # Joint normalization per pair: compute min/max over each (A,B) pair
             # independently using axis=(1,2) so shape is (B, 1, 1).
             pair_min = np.minimum(
                 batchA_np.min(axis=(1, 2), keepdims=True),

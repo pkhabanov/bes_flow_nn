@@ -25,11 +25,10 @@ def to_numpy(x):
     return np.asarray(x, dtype=np.float32)
 
 
-# Per-pair metrics (accept (2, H, W) arrays or tensors)
-
 def end_point_error(flow_pred, flow_gt):
     """
     Per-pixel Euclidean distance between predicted and ground-truth vectors.
+    Accepts (2, H, W) arrays or tensors.
 
     Returns
     -------
@@ -142,7 +141,8 @@ def evaluate_pair(flow_pred, flow_gt,
     _,        mean_repe = relative_epe(flow_pred, flow_gt, epsilon)
     _,        mean_ae   = angular_error(flow_pred, flow_gt)
     fl                  = outlier_rate(flow_pred, flow_gt,
-                                       epe_threshold, repe_threshold)
+                                       epe_threshold=mean_epe, 
+                                       repe_threshold=mean_repe)
     r_dx, r_dy          = correlation_coefficient(flow_pred, flow_gt)
 
     return {
@@ -235,7 +235,7 @@ def plot_metric_distributions(results, flow_type, output_dir):
     fig.suptitle(
         f"Metric distributions  |  flow: {flow_type}  |  "
         f"n={len(results['EPE'])} pairs",
-        fontsize=13, fontweight='bold',
+        fontsize=16, fontweight='bold',
     )
 
     plots = [
@@ -254,7 +254,7 @@ def plot_metric_distributions(results, flow_type, output_dir):
         ax.axvline(np.median(v), color='black', linewidth=1.5, linestyle='--',
                    label=f'Median={np.median(v):.3f}')
         ax.set_xlabel(label);  ax.set_ylabel('Count')
-        ax.legend(fontsize=8);  ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=10);  ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     path = os.path.join(output_dir, 'metric_distributions.png')
@@ -311,23 +311,24 @@ def plot_spatial_error_map(flows_pred, flows_gt, output_dir):
     epe_map      = np.sqrt((diff ** 2).sum(axis=1))   # (n, H, W)
     mean_epe_map = epe_map.mean(axis=0)
     std_epe_map  = epe_map.std(axis=0)
+    n_frames = epe_map.shape[0]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle('Spatial error map  (mean EPE per pixel)',
-                 fontsize=13, fontweight='bold')
+    fig.suptitle(f'Spatial error map (mean EPE per pixel over {n_frames} frame pairs)',
+                 fontsize=16, fontweight='bold')
 
-    im0 = axes[0].imshow(mean_epe_map, cmap='hot', origin='upper', vmin=0)
+    im0 = axes[0].imshow(mean_epe_map, cmap='hot', origin='lower', vmin=0)
     axes[0].set_title('Mean EPE  (px)')
     axes[0].set_xlabel('x  (px)');  axes[0].set_ylabel('y  (px)')
     fig.colorbar(im0, ax=axes[0], shrink=0.8)
 
-    im1 = axes[1].imshow(std_epe_map, cmap='hot', origin='upper', vmin=0)
-    axes[1].set_title('Std of EPE  (px)  — prediction uncertainty')
+    im1 = axes[1].imshow(std_epe_map, cmap='hot', origin='lower', vmin=0)
+    axes[1].set_title('Std of EPE  (px)')
     axes[1].set_xlabel('x  (px)')
     fig.colorbar(im1, ax=axes[1], shrink=0.8)
 
     plt.tight_layout()
-    path = os.path.join(output_dir, 'spatial_error_map.png')
+    #path = os.path.join(output_dir, 'spatial_error_map.png')
     #plt.savefig(path, dpi=150, bbox_inches='tight')
     plt.show()
     #print(f"Saved: {path}")
@@ -338,7 +339,7 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
     """
     Show n_examples pairs sampled from different EPE quartiles.
 
-    Each row: Frame A | Frame B | GT quiver | Predicted quiver | EPE map.
+    Each row: Frame A | Frame B+GT quiver | Frame B+Predicted quiver | EPE map.
 
     Selecting one pair per quartile ensures both the best and the worst
     predictions are shown — more informative than random sampling.
@@ -351,7 +352,7 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
 
     fig = plt.figure(figsize=(20, 4 * n_examples))
     fig.suptitle('Qualitative examples  —  one per EPE quartile',
-                 fontsize=13, fontweight='bold')
+                 fontsize=16, fontweight='bold')
 
     quiver_step = 8
     H, W        = framesA.shape[2], framesA.shape[3]
@@ -369,41 +370,36 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
         label   = quartile_labels[min(row, len(quartile_labels) - 1)]
         epe_val = results['EPE'][idx]
 
-        gs = gridspec.GridSpec(n_examples, 5, figure=fig,
+        gs = gridspec.GridSpec(n_examples, 4, figure=fig,
                                hspace=0.35, wspace=0.3)
 
         ax0 = fig.add_subplot(gs[row, 0])
-        ax0.imshow(fA, cmap='inferno', origin='upper')
-        ax0.set_ylabel(f'{label}\nEPE={epe_val:.3f}px', fontsize=9)
+        ax0.imshow(fA, cmap='inferno', origin='lower')
+        ax0.set_ylabel(f'{label}\nEPE={epe_val:.3f}px', fontsize=12)
         if row == 0:  ax0.set_title('Frame A')
         ax0.set_xticks([])
 
         ax1 = fig.add_subplot(gs[row, 1])
-        ax1.imshow(fB, cmap='inferno', origin='upper')
-        if row == 0:  ax1.set_title('Frame B')
+        ax1.imshow(fB, cmap='inferno', origin='lower')
+        if row == 0:  ax1.set_title('Frame B + GT Flow')
+        ax1.quiver(xx, yy, gt[0][yy, xx], gt[1][yy, xx],
+                   color='cyan', scale=60, scale_units='width',
+                   width=0.005, headwidth=4)
         ax1.set_xticks([]);  ax1.set_yticks([])
 
         ax2 = fig.add_subplot(gs[row, 2])
-        ax2.imshow(fA, cmap='inferno', origin='upper')
-        ax2.quiver(xx, yy, gt[0][yy, xx], -gt[1][yy, xx],
-                   color='cyan', scale=60, scale_units='width',
+        ax2.imshow(fB, cmap='inferno', origin='lower')
+        ax2.quiver(xx, yy, pred[0][yy, xx], pred[1][yy, xx],
+                   color='yellow', scale=60, scale_units='width',
                    width=0.005, headwidth=4)
-        if row == 0:  ax2.set_title('GT flow')
+        if row == 0:  ax2.set_title('Frame B + Predicted flow')
         ax2.set_xticks([]);  ax2.set_yticks([])
 
         ax3 = fig.add_subplot(gs[row, 3])
-        ax3.imshow(fA, cmap='inferno', origin='upper')
-        ax3.quiver(xx, yy, pred[0][yy, xx], -pred[1][yy, xx],
-                   color='yellow', scale=60, scale_units='width',
-                   width=0.005, headwidth=4)
-        if row == 0:  ax3.set_title('Predicted flow')
+        im  = ax3.imshow(epe, cmap='hot', origin='lower', vmin=0, vmax=5)
+        plt.colorbar(im, ax=ax3, shrink=0.8, label='px')
+        if row == 0:  ax3.set_title('EPE map')
         ax3.set_xticks([]);  ax3.set_yticks([])
-
-        ax4 = fig.add_subplot(gs[row, 4])
-        im  = ax4.imshow(epe, cmap='hot', origin='upper', vmin=0)
-        plt.colorbar(im, ax=ax4, shrink=0.8, label='px')
-        if row == 0:  ax4.set_title('EPE map')
-        ax4.set_xticks([]);  ax4.set_yticks([])
 
     path = os.path.join(output_dir, 'qualitative_examples.png')
     #plt.savefig(path, dpi=150, bbox_inches='tight')

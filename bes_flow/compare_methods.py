@@ -11,7 +11,7 @@
 # Usage
 # ─────
 #   python -m bes_flow.compare_methods \
-#       --weights_pwc.     checkpoints/pwc_best.pt \
+#       --weights_pwc      checkpoints/pwc_best.pt \
 #       --weights_flownets checkpoints/flownets_best.pt \
 #       --cache            synthetic_data/dataset_well.h5 \
 #       --output           outputs/comparison/

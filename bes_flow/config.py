@@ -97,7 +97,7 @@ class Config:
     # The cache is automatically invalidated when any generation setting
     # changes: flow_type, max_shift, noise_std, n_pairs_per_frame,
     # val_split, test_split, val_seed, n_test_pairs, or test_seed.
-    dataset_cache_path: str = f"synthetic_data/dataset1_{flow_type}.h5"
+    dataset_cache_path: str = f"synthetic_data/dataset_maxshift_{max_shift}.h5"
 
     # Fixed seed for the VALIDATION set only.
     # Fixing this makes val-loss numbers directly comparable across runs
