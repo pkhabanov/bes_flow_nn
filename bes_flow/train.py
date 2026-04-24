@@ -764,6 +764,11 @@ if __name__ == '__main__':
         print(f"Model parameters: {n_params:,}\n")
 
     # ── Loss ──────────────────────────────────────────────────────────────
+    if cfg.is_supervised:
+        print('\nRunning SUPERVISED training')
+    else:
+        print('\nRunning UNSUPERVISED training')
+        
     loss_fn = WarpingL2Loss(
         smooth_weight = cfg.smooth_weight,
         laplacian_weight = cfg.laplacian_weight,
