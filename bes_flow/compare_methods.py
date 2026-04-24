@@ -352,6 +352,10 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
     for row, idx in enumerate(indices):
         fA = framesA[idx, 0]
         fB = framesB[idx, 0]
+        # Common colour scale — both frames share the same vmin/vmax 
+        vmin = min(fA.min(), fB.min())
+        vmax = max(fA.max(), fB.max())
+
         gt = flows_gt[idx]
 
         # Relative signed errors for all methods — shared colour scale across the row
@@ -370,14 +374,14 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
 
         # ── Frame A ──────────────────────────────────────────────────────
         ax = fig1.add_subplot(gs1[row, col1]);  col1 += 1
-        ax.imshow(fA, cmap='inferno', origin='lower')
+        ax.imshow(fA, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         if row == 0:  ax.set_title('Frame A', fontsize=10)
         ax.set_ylabel(f'pair {idx}', fontsize=10)
         ax.set_xticks([]);  ax.set_yticks([])
 
         # ── Frame B + GT quiver ───────────────────────────────────────────
         ax = fig1.add_subplot(gs1[row, col1]);  col1 += 1
-        ax.imshow(fB, cmap='inferno', origin='lower')
+        ax.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         ax.quiver(xx, yy, gt[0][yy, xx], gt[1][yy, xx],
                   color='cyan', scale=60, scale_units='width',
                   width=0.005, headwidth=4)
@@ -389,7 +393,7 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
             pred = all_flows[m][idx]
             
             ax   = fig1.add_subplot(gs1[row, col1]);  col1 += 1
-            ax.imshow(fB, cmap='inferno', origin='lower')
+            ax.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
             ax.quiver(xx, yy, pred[0][yy, xx], pred[1][yy, xx],
                       color=qcol, scale=60, scale_units='width',
                       width=0.005, headwidth=4)

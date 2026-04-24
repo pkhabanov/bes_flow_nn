@@ -363,6 +363,10 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
     for row, idx in enumerate(indices):
         fA   = framesA[idx, 0]
         fB   = framesB[idx, 0]
+        # Common colour scale — both frames share the same vmin/vmax 
+        vmin = min(fA.min(), fB.min())
+        vmax = max(fA.max(), fB.max())
+
         pred = flows_pred[idx]
         gt   = flows_gt[idx]
         epe  = np.sqrt(((pred - gt) ** 2).sum(axis=0))
@@ -374,13 +378,13 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
                                hspace=0.35, wspace=0.3)
 
         ax0 = fig.add_subplot(gs[row, 0])
-        ax0.imshow(fA, cmap='inferno', origin='lower')
+        ax0.imshow(fA, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         ax0.set_ylabel(f'{label}\nEPE={epe_val:.3f}px', fontsize=12)
         if row == 0:  ax0.set_title('Frame A')
         ax0.set_xticks([])
 
         ax1 = fig.add_subplot(gs[row, 1])
-        ax1.imshow(fB, cmap='inferno', origin='lower')
+        ax1.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         if row == 0:  ax1.set_title('Frame B + GT Flow')
         ax1.quiver(xx, yy, gt[0][yy, xx], gt[1][yy, xx],
                    color='cyan', scale=60, scale_units='width',
@@ -388,7 +392,7 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
         ax1.set_xticks([]);  ax1.set_yticks([])
 
         ax2 = fig.add_subplot(gs[row, 2])
-        ax2.imshow(fB, cmap='inferno', origin='lower')
+        ax2.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         ax2.quiver(xx, yy, pred[0][yy, xx], pred[1][yy, xx],
                    color='yellow', scale=60, scale_units='width',
                    width=0.005, headwidth=4)

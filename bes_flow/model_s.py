@@ -39,7 +39,7 @@
 #       output_conv [1x1 conv]    -> (B,   2, 64, 64)  final flow
 #
 # GroupNorm is used throughout for batch-size-independent
-# normalisation, with num_groups=8 (divisor of all channel counts above).
+# normalization, with num_groups=8 (divisor of all channel counts above).
 
 import torch
 import torch.nn as nn
@@ -229,7 +229,7 @@ class BESFlowNetS(nn.Module):
         """
         Parameters
         ----------
-        frameA, frameB : (B, 1, 64, 64) — consecutive BES frames, normalised to [0, 1]
+        frameA, frameB : (B, 1, 64, 64) — consecutive BES frames, normalized to [0, 1]
 
         Returns
         -------

@@ -167,6 +167,9 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
                   'EPE  vx  (px)', 'EPE  vy  (px)']
  
     for row, (ft, fA, fB, gt, pred, epe_val) in enumerate(samples):
+        # Common colour scale — both frames share the same vmin/vmax 
+        vmin = min(fA.min(), fB.min())
+        vmax = max(fA.max(), fB.max())
         # Per-component errors (H, W)
         #epe_vx = np.abs(pred[0] - gt[0])   # |Δdx|
         #epe_vy = np.abs(pred[1] - gt[1])   # |Δdy|
@@ -181,14 +184,14 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
  
         # col 0 — Frame A
         ax0 = fig.add_subplot(gs[row, 0])
-        ax0.imshow(fA, cmap='inferno', origin='upper')
+        ax0.imshow(fA, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         ax0.set_ylabel(f'{ft}\nEPE={epe_val:.3f} px', fontsize=12)
         if row == 0:  ax0.set_title(col_titles[0])
         ax0.set_xticks([]);  ax0.set_yticks([])
  
         # col 1 — Frame B with GT flow quiver
         ax1 = fig.add_subplot(gs[row, 1])
-        ax1.imshow(fB, cmap='inferno', origin='upper')
+        ax1.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         ax1.quiver(xx, yy, gt[0][yy, xx], -gt[1][yy, xx],
                    color='cyan', scale=60, scale_units='width',
                    width=0.005, headwidth=4)
@@ -197,7 +200,7 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
  
         # col 2 — Frame B with predicted flow quiver
         ax2 = fig.add_subplot(gs[row, 2])
-        ax2.imshow(fB, cmap='inferno', origin='upper')
+        ax2.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         ax2.quiver(xx, yy, pred[0][yy, xx], -pred[1][yy, xx],
                    color='yellow', scale=60, scale_units='width',
                    width=0.005, headwidth=4)
@@ -206,18 +209,18 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
  
         # col 3 — per-pixel error in vx
         ax3 = fig.add_subplot(gs[row, 3])
-        #im3 = ax3.imshow(epe_vx, cmap='hot', origin='upper',
+        #im3 = ax3.imshow(epe_vx, cmap='hot', origin='lower',
         #                  vmin=0, vmax=vmax_epe)
-        im3 = ax3.imshow(diff_vx, cmap='RdBu_r', origin='upper', norm=norm)
+        im3 = ax3.imshow(diff_vx, cmap='RdBu_r', origin='lower', norm=norm)
         plt.colorbar(im3, ax=ax3, shrink=0.8, label='px')
         if row == 0:  ax3.set_title(col_titles[3])
         ax3.set_xticks([]);  ax3.set_yticks([])
  
         # col 4 — per-pixel error in vy
         ax4 = fig.add_subplot(gs[row, 4])
-        #im4 = ax4.imshow(epe_vy, cmap='hot', origin='upper',
+        #im4 = ax4.imshow(epe_vy, cmap='hot', origin='lower',
         #                 vmin=0, vmax=vmax_epe)
-        im4 = ax4.imshow(diff_vy, cmap='RdBu_r', origin='upper', norm=norm)
+        im4 = ax4.imshow(diff_vy, cmap='RdBu_r', origin='lower', norm=norm)
         plt.colorbar(im4, ax=ax4, shrink=0.8, label='px')
         if row == 0:  ax4.set_title(col_titles[4])
         ax4.set_xticks([]);  ax4.set_yticks([])
@@ -768,7 +771,7 @@ if __name__ == '__main__':
         print('\nRunning SUPERVISED training')
     else:
         print('\nRunning UNSUPERVISED training')
-        
+
     loss_fn = WarpingL2Loss(
         smooth_weight = cfg.smooth_weight,
         laplacian_weight = cfg.laplacian_weight,
@@ -842,7 +845,7 @@ if __name__ == '__main__':
 
     # plot history
     if args.plot_results:
-        history_path = 'outputs-pwcnet/train_history_curriculum.json'
+        history_path = 'outputs-' + args.model + '-sup/train_history_curriculum.json'
         with open(history_path, 'r') as file:
             full_history = json.load(file)
         total = len(full_history['total'])
