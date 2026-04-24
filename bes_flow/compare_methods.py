@@ -259,7 +259,7 @@ def print_comparison_table(all_results):
 # Fixed colour palette — one entry per method in the order they are registered
 _METHOD_COLORS  = ['steelblue', 'darkorange', 'forestgreen',
                    'mediumpurple', 'crimson']
-_QUIVER_COLORS  = ['yellow', 'lime', 'magenta', 'orange', 'deepskyblue']
+_QUIVER_COLORS  = ['lime', 'deepskyblue', 'lawngreen', 'lavender', 'turquoise', ]
 
 
 def plot_metric_bars(all_results, output_dir):
@@ -279,7 +279,7 @@ def plot_metric_bars(all_results, output_dir):
 
     fig, axes = plt.subplots(1, len(display), figsize=(4 * len(display), 5))
     fig.suptitle('Algorithm comparison  —  mean ± std across test pairs',
-                 fontsize=13, fontweight='bold')
+                 fontsize=12, fontweight='bold')
 
     x = np.arange(len(methods))
 
@@ -290,7 +290,7 @@ def plot_metric_bars(all_results, output_dir):
         ax.bar(x, means, 0.6, yerr=stds, color=colors,
                capsize=5, edgecolor='black', alpha=0.85)
         ax.set_xticks(x)
-        ax.set_xticklabels(methods, rotation=20, ha='right', fontsize=8)
+        ax.set_xticklabels(methods, rotation=40, ha='right', fontsize=12)
         ax.set_ylabel(label);  ax.set_title(label)
         ax.grid(True, alpha=0.3, axis='y')
 
@@ -308,7 +308,7 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
     Grid figure: one row per randomly chosen test pair.
 
     Columns:
-      Frame A | Frame B + GT quiver | <one column per method> | vx error | vy error
+      Frame A | Frame B + GT quiver | <one column per method>
 
     Error maps (last two columns) show pred - GT for the FIRST method only,
     with a shared CenteredNorm so the scale is comparable across all rows.
@@ -327,15 +327,26 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
     xs     = np.arange(qs // 2, W, qs)
     xx, yy = np.meshgrid(xs, ys)
 
-    # frameA | GT | method_1 ... method_N | err_vx | err_vy
-    n_cols = 2 + len(methods) + 2
+    # frameA | frameB + GT | method_1 ... method_N
+    n_cols = 2 + len(methods)
     n_rows = len(indices)
 
-    fig = plt.figure(figsize=(3.2 * n_cols, 3.2 * n_rows))
-    fig.suptitle('Qualitative comparison  —  random test pairs',
-                 fontsize=13, fontweight='bold')
-
-    gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
+    fig1 = plt.figure(figsize=(3.2 * n_cols, 3.2 * n_rows))
+    fig1.suptitle('Qualitative comparison  - random test pairs',
+                  fontsize=12, fontweight='bold')
+    gs1 = gridspec.GridSpec(n_rows, n_cols, figure=fig1,
+                           hspace=0.35, wspace=0.25)
+    
+    fig2 = plt.figure(figsize=(3.2 * (n_cols-2), 3.2 * n_rows))
+    fig2.suptitle('Qualitative comparison  - random test pairs',
+                  fontsize=12, fontweight='bold')
+    gs2 = gridspec.GridSpec(n_rows, 2*(n_cols-2), figure=fig2,
+                           hspace=0.15, wspace=0.25)
+    
+    fig3 = plt.figure(figsize=(3.2 * (n_cols-2), 3.2 * n_rows))
+    fig3.suptitle('Mean Vy flow comparison  - random test pairs',
+                  fontsize=12, fontweight='bold')
+    gs3 = gridspec.GridSpec(n_rows, (n_cols-2), figure=fig3,
                            hspace=0.35, wspace=0.25)
 
     for row, idx in enumerate(indices):
@@ -343,63 +354,81 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
         fB = framesB[idx, 0]
         gt = flows_gt[idx]
 
-        # Signed errors for all methods — shared colour scale across the row
+        # Relative signed errors for all methods — shared colour scale across the row
         diffs_vx = [all_flows[m][idx, 0] - gt[0] for m in methods]
         diffs_vy = [all_flows[m][idx, 1] - gt[1] for m in methods]
-        vmax     = max(
-            max(np.abs(d).max() for d in diffs_vx),
-            max(np.abs(d).max() for d in diffs_vy),
-        )
-        norm = CenteredNorm(vcenter=0, halfrange=vmax)
+        vmax_x = 7 #max([np.abs(d).max() for d in diffs_vx])
+        vmax_y = 7 #max([np.abs(d).max() for d in diffs_vy])
+        
+        norm_x = CenteredNorm(vcenter=0, halfrange=vmax_x)
+        norm_y = CenteredNorm(vcenter=0, halfrange=vmax_y)
 
-        col = 0
+        col1 = 0
+        col2 = 0
+        col3 = 0
+        i = 0
 
         # ── Frame A ──────────────────────────────────────────────────────
-        ax = fig.add_subplot(gs[row, col]);  col += 1
-        ax.imshow(fA, cmap='inferno', origin='upper')
-        if row == 0:  ax.set_title('Frame A', fontsize=8)
-        ax.set_ylabel(f'pair {idx}', fontsize=7)
+        ax = fig1.add_subplot(gs1[row, col1]);  col1 += 1
+        ax.imshow(fA, cmap='inferno', origin='lower')
+        if row == 0:  ax.set_title('Frame A', fontsize=10)
+        ax.set_ylabel(f'pair {idx}', fontsize=10)
         ax.set_xticks([]);  ax.set_yticks([])
 
         # ── Frame B + GT quiver ───────────────────────────────────────────
-        ax = fig.add_subplot(gs[row, col]);  col += 1
-        ax.imshow(fB, cmap='inferno', origin='upper')
-        ax.quiver(xx, yy, gt[0][yy, xx], -gt[1][yy, xx],
+        ax = fig1.add_subplot(gs1[row, col1]);  col1 += 1
+        ax.imshow(fB, cmap='inferno', origin='lower')
+        ax.quiver(xx, yy, gt[0][yy, xx], gt[1][yy, xx],
                   color='cyan', scale=60, scale_units='width',
                   width=0.005, headwidth=4)
-        if row == 0:  ax.set_title('GT flow', fontsize=8)
+        if row == 0:  ax.set_title('GT flow', fontsize=10)
         ax.set_xticks([]);  ax.set_yticks([])
 
-        # ── One quiver column per method ─────────────────────────────────
+        # ── One column per method ─────────────────────────────────
         for m, qcol in zip(methods, quiver_colors):
             pred = all_flows[m][idx]
-            ax   = fig.add_subplot(gs[row, col]);  col += 1
-            ax.imshow(fB, cmap='inferno', origin='upper')
-            ax.quiver(xx, yy, pred[0][yy, xx], -pred[1][yy, xx],
+            
+            ax   = fig1.add_subplot(gs1[row, col1]);  col1 += 1
+            ax.imshow(fB, cmap='inferno', origin='lower')
+            ax.quiver(xx, yy, pred[0][yy, xx], pred[1][yy, xx],
                       color=qcol, scale=60, scale_units='width',
                       width=0.005, headwidth=4)
-            if row == 0:  ax.set_title(m, fontsize=8)
+            if row == 0:  ax.set_title(m, fontsize=10)
             ax.set_xticks([]);  ax.set_yticks([])
 
-        # ── Signed error maps for first method (representative) ───────────
-        first = methods[0]
-        ax = fig.add_subplot(gs[row, col]);  col += 1
-        im = ax.imshow(diffs_vx[0], cmap='RdBu_r', origin='upper', norm=norm)
-        plt.colorbar(im, ax=ax, shrink=0.8, label='px')
-        if row == 0:  ax.set_title(f'{first}\npred−GT vx', fontsize=8)
-        ax.set_xticks([]);  ax.set_yticks([])
+            # ── Signed error maps for all methods ––––––––––––––––––––––––
+            ax = fig2.add_subplot(gs2[row, col2]);  
+            im = ax.imshow(diffs_vx[i], cmap='RdBu_r', origin='lower', norm=norm_x)
+            fig2.colorbar(im, ax=ax, shrink=0.8, label='px')
+            if row == 0: ax.set_title(m+'\npred-GT vx', fontsize=10)
+            if col2 == 0: ax.set_ylabel(f'pair {idx}', fontsize=10)
+            ax.set_xticks([]);  ax.set_yticks([])
+            col2 += 1
 
-        ax = fig.add_subplot(gs[row, col]);  col += 1
-        im = ax.imshow(diffs_vy[0], cmap='RdBu_r', origin='upper', norm=norm)
-        plt.colorbar(im, ax=ax, shrink=0.8, label='px')
-        if row == 0:  ax.set_title(f'{first}\npred−GT vy', fontsize=8)
-        ax.set_xticks([]);  ax.set_yticks([])
+            ax = fig2.add_subplot(gs2[row, col2])
+            im = ax.imshow(diffs_vy[i], cmap='RdBu_r', origin='lower', norm=norm_y)
+            fig2.colorbar(im, ax=ax, shrink=0.8, label='px')
+            if row == 0:  ax.set_title(m+'\npred-GT vy', fontsize=10)
+            ax.set_xticks([]);  ax.set_yticks([])
+            col2 += 1
+            i += 1
 
-    path = os.path.join(output_dir, 'comparison_examples.png')
-    plt.savefig(path, dpi=150, bbox_inches='tight')
+            # ––––– Mean Vy flow vs GT for all methods ––––––––––––––––––––––––
+            ax   = fig3.add_subplot(gs3[row, col3])
+            ax.plot(np.mean(gt[1], axis=0), color='k', lw=2, label='GT')
+            ax.plot(np.mean(pred[1], axis=0), color='r', lw=2, label='Pred')
+            if row == 0:  ax.set_title(m, fontsize=10)
+            if row == n_rows-1: ax.set_xlabel('x (px)', fontsize=10)
+            if col3 == 0: 
+                ax.legend()
+                ax.set_ylabel(f'<Vy> \npair {idx}', fontsize=10)
+            col3 += 1
+
+    #path = os.path.join(output_dir, 'comparison_examples.png')
+    #plt.savefig(path, dpi=150, bbox_inches='tight')
+    #print(f"Saved: {path}")
     plt.show()
     plt.close('all')
-    print(f"Saved: {path}")
 
 
 if __name__ == '__main__':
