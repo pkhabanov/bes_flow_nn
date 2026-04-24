@@ -1,7 +1,5 @@
 # bes_flow/loss.py
 #
-# Loss function used to train the Siamese CNN.
-#
 # Workflow:
 #   1. Take the network's predicted flow field.
 #   2. Use it to WARP frame B toward frame A (move every pixel by its
@@ -10,15 +8,14 @@
 #      If the flow prediction is correct, the warped frame should look
 #      like frame A and the loss should be near zero.
 #
-# In addition to the photometric term above, we add a smoothness penalty
+# In addition to the photometric term, we add a smoothness penalty
 # that discourages the network from producing jagged, discontinuous flow fields.
 #
 # If synthetic training data WITH known ground-truth displacements is
-# available (generated in dataset.py), an optional supervised L2 term
+# available (generated in dataset.py), an optional supervised EPE term
 # against the ground truth can be included to accelerate convergence.
 #
-# Reference: UnFlow (Meister et al., AAAI 2018) formalised the unsupervised
-# warping-loss approach that this implementation follows.
+# Reference: UnFlow (Meister et al., AAAI 2018)
 
 import torch
 import torch.nn as nn
@@ -27,24 +24,22 @@ import torch.nn.functional as F
 
 class WarpingL2Loss(nn.Module):
     """
-    Combined loss for optical flow training:
-
-        total_loss = photometric_loss + smooth_weight * smoothness_loss
-                     [+ sup_weight * supervised_loss if ground truth is provided]
+    Combined loss for optical flow training
 
     Parameters
     ----------
     smooth_weight : scalar weight on the smoothness regularisation term.
-                    Increase if the predicted flow fields look noisy/jagged.
-                    Decrease if the flow looks over-smoothed and misses detail.
     sup_weight    : scalar weight on the supervised loss
+    is_supervised : bool - if False - unsupervised: photometric + smoothness + laplacian,
+                    if True - supervised training: EPE on flow + smoothness
     """
-    def __init__(self, smooth_weight=0.01, laplacian_weight=0.05, sup_weight=0.1):
+    def __init__(self, smooth_weight=0.01, laplacian_weight=0.05,
+                 sup_weight=0.1, is_supervised=False):
         super().__init__()
         self.smooth_weight = smooth_weight
         self.sup_weight = sup_weight
         self.laplacian_weight = laplacian_weight
-
+        self.is_supervised = is_supervised
 
     def warp(self, frame, flow):
         """
@@ -103,7 +98,12 @@ class WarpingL2Loss(nn.Module):
         '''
         return torch.sqrt(x**2 + eps**2).mean()
 
-
+    def epe_loss(self, flow, flow_gt):
+        """
+        End-Point Error: mean L2 norm of the per-pixel flow error vector.
+        """
+        return torch.norm(flow - flow_gt, p=2, dim=1).mean()
+    
     def smoothness_loss(self, flow, flow_gt=None):
         """
         Penalises spatial gradients in the predicted flow field.
@@ -148,8 +148,7 @@ class WarpingL2Loss(nn.Module):
         frameB  : (B, 1, H, W) — frame to be warped toward frameA
         flow    : (B, 2, H, W) — network's predicted displacement field
         flow_gt : (B, 2, H, W) or None
-                  Ground-truth flow (only available for synthetic data).
-                  If provided, an additional supervised MSE term is added.
+                  Ground-truth flow
 
         Returns
         -------
@@ -157,25 +156,33 @@ class WarpingL2Loss(nn.Module):
         photo_loss   : scalar — photometric term alone (logged separately)
         smooth_loss  : scalar — smoothness term alone (logged separately)
         """
-        # Warp frameB toward frameA using the predicted flow.
-        # If the flow is perfectly correct, frameB_warped ≈ frameA.
-        frameB_warped = self.warp(frameB, flow)
+        if self.is_supervised:
+            assert flow_gt is not None, \
+                "flow_gt must be provided in supervised mode"
+            
+            sup_loss = self.epe_loss(flow, flow_gt)
 
-        # Photometric loss: pixel-wise MSE between frameA and warped frameB.
-        # analogous to the L2 strip distance minimised by ODP.
-        photo_loss = self.charbonnier(frameA - frameB_warped)
+            # Smoothness applied to residual (flow_pred - flow_gt):
+            smooth_loss, _ = self.smoothness_loss(flow, flow_gt)
 
-        # Smoothness penalty on the predicted flow field
-        smooth_loss, laplacian_loss = self.smoothness_loss(flow, flow_gt)
+            # Zero out unused terms for consistent logging
+            laplacian_loss = flow.new_zeros(())
+            photo_loss = flow.new_zeros(())
+            
+            total = sup_loss * self.sup_weight + smooth_loss * self.smooth_weight
 
-        # Optional supervised term: direct MSE between predicted and true flow.
-        # Only used during training when ground truth is provided
-        sup_loss = F.mse_loss(flow, flow_gt) if flow_gt is not None \
-           else flow.new_zeros(())  
+        else: # unsupervised
+            # Warp frameB toward frameA using the predicted flow.
+            frameB_warped = self.warp(frameB, flow)
 
-        w1 = self.smooth_weight
-        w2 = self.laplacian_weight
-        s = self.sup_weight if flow_gt is not None else 0.0
-        total = photo_loss + w1 * smooth_loss + w2 * laplacian_loss + s * sup_loss
+            # Photometric loss
+            photo_loss = self.charbonnier(frameA - frameB_warped)
+
+            # Smoothness penalty on the predicted flow field
+            smooth_loss, laplacian_loss = self.smoothness_loss(flow, flow_gt)
+
+            sup_loss = flow.new_zeros()
+
+            total = photo_loss + self.smooth_weight * smooth_loss + self.laplacian_weight * laplacian_loss
         
         return total, photo_loss, smooth_loss, laplacian_loss, sup_loss

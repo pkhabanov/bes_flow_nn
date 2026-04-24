@@ -1,24 +1,6 @@
 # bes_flow/train.py
 #
-# Training loop, model evaluation, and entry point.
-#
-# Workflow
-# ────────
-#  1. Load raw BES frames from HDF5.
-#  2. Split frames into three disjoint subsets:
-#       train_frames  — synthetic training pairs
-#       val_frames    — synthetic validation pairs
-#       test_frames   — held out; only touched after training ends
-#  3. Call make_datasets() once to generate (or load from cache) all
-#     three BESDataset objects.
-#  4. Call make_dataloaders() to wrap them in DataLoaders.
-#  5. Train the network:
-#       single-flow-type mode  — train() with the three fixed loaders
-#       curriculum mode        — curriculum_train() rebuilds train/val
-#                                datasets for each stage (different flow
-#                                type) and also reduces the learning rate.
-#  6. Load the best checkpoint and run the full evaluation suite on the
-#     test set.
+# Training loop and model evaluation
 #
 # Usage
 # ─────
@@ -363,6 +345,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         for step, batch in enumerate(train_loader, start=1):
             frameA  = batch[0].to(device)
             frameB  = batch[1].to(device)
+            # check if supervised training
             if cfg.is_supervised:
                 flow_gt = batch[2].to(device)
             else:
@@ -419,6 +402,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
                 flow_gt = batch[2].to(device)
                 # model prediction
                 flow_pred = model(frameA, frameB)
+                # check if supervised
                 if cfg.is_supervised:
                     loss, _, _, _, _ = loss_fn(frameA, frameB, flow_pred,
                                             flow_gt=flow_gt)
@@ -784,6 +768,7 @@ if __name__ == '__main__':
         smooth_weight = cfg.smooth_weight,
         laplacian_weight = cfg.laplacian_weight,
         sup_weight    = cfg.sup_weight,
+        is_supervised = cfg.is_supervised,
     )
     
     if not args.skip_train:
@@ -852,7 +837,7 @@ if __name__ == '__main__':
 
     # plot history
     if args.plot_results:
-        history_path = 'outputs-flownet/train_history_curriculum.json'
+        history_path = 'outputs-pwcnet/train_history_curriculum.json'
         with open(history_path, 'r') as file:
             full_history = json.load(file)
         total = len(full_history['total'])

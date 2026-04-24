@@ -48,7 +48,7 @@ class Config:
     max_displacement: int = 4
 
     # --- Training ------------------------------------------------------------
-    # If supervised, then additional MSE loss will be used with ground truth flow
+    # If supervised, then the EPE loss will be used with ground truth flow
     is_supervised: bool = False
 
     # Total number of passes through the training data.
