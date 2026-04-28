@@ -24,6 +24,7 @@
 
 
 import os
+import time
 import argparse
 import numpy as np
 import cv2
@@ -82,8 +83,16 @@ def run_bes_model(model, dataset, device, batch_size=16):
     Run a BES neural network on the test dataset.
     Uses predict_dataset() from train.py which reads frames directly from
     the dataset's numpy arrays without augmentation.
+
+    Returns
+    -------
+    flows   : (N, 2, H, W) float32
+    elapsed : float — wall-clock seconds spent in predict_dataset only
     """
-    return predict_dataset(model, dataset, device, batch_size)
+    t0 = time.perf_counter()
+    flows = predict_dataset(model, dataset, device, batch_size)
+    elapsed = time.perf_counter() - t0
+    return flows, elapsed
 
 
 def run_farneback(framesA, framesB):
@@ -99,21 +108,25 @@ def run_farneback(framesA, framesB):
     H, W  = framesA.shape[2], framesA.shape[3]
     flows = np.zeros((N, 2, H, W), dtype=np.float32)
 
+    elapsed = 0.0
     print("\n  Running Farneback...")
     for i in range(N):
+        # Preprocessing: normalise to uint8
         fA = (framesA[i, 0] * 255).astype(np.uint8)
         fB = (framesB[i, 0] * 255).astype(np.uint8)
 
+        t0 = time.perf_counter()
         flow_cv = cv2.calcOpticalFlowFarneback(
             fA, fB, flow=None,
             pyr_scale=0.5, levels=3, winsize=15,
             iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
         )   # (H, W, 2)  channel 0 = dx, channel 1 = dy
+        elapsed += time.perf_counter() - t0
 
         flows[i, 0] = flow_cv[:, :, 0]
         flows[i, 1] = flow_cv[:, :, 1]
 
-    return flows
+    return flows, elapsed
 
 
 def run_raft_small(framesA, framesB, device, batch_size=16):
@@ -142,22 +155,25 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
 
     flows = np.zeros((N, 2, H, W), dtype=np.float32)
 
+    elapsed = 0.0
     print("\n  Running RAFT-small...")
     with torch.no_grad():
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)
 
-            # (B, 1, H, W) → (B, 3, H, W) by repeating the single channel
+            # Preprocessing: channel repeat + upsample
             bA = torch.tensor(framesA[start:end]).repeat(1, 3, 1, 1).to(device)
             bB = torch.tensor(framesB[start:end]).repeat(1, 3, 1, 1).to(device)
-
             bA = F.interpolate(bA, size=(H_up, W_up), mode='bilinear',
                                align_corners=False)
             bB = F.interpolate(bB, size=(H_up, W_up), mode='bilinear',
                                align_corners=False)
 
             # RAFT returns a list of iterative flow estimates; take the last
+            t0 = time.perf_counter()
             flow_predictions = raft(bA, bB)[-1]
+            elapsed += time.perf_counter() - t0
+
             # Downsample back to 64x64 and rescale pixel values
             # Take into account flow scaling: 
             # A displacement of d px in 128x128 = d * (H / H_up) px in 64x64.
@@ -167,7 +183,7 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
             flows[start:end] = flow_down.cpu().numpy()
 
     del raft
-    return flows
+    return flows, elapsed
 
 
 def run_odp(framesA, framesB, nstep='default', smooth=15, mframe=2, mx='default', my='default'):
@@ -191,32 +207,41 @@ def run_odp(framesA, framesB, nstep='default', smooth=15, mframe=2, mx='default'
     if mx_val is None: mx_val = int((nx / 6.0) / 2 + 0.5) * 2 + 1
     if my_val is None: my_val = int((ny / 6.0) / 2 + 0.5) * 2 + 1
     
+    elapsed = 0.0
     print("\n  Running ODP...")
     print(f"n_steps: {nstep_val} | smooth: {sm_param} | mframe: {m_frame} | mx: {mx_val} | my: {my_val}")
     # loop over image pairs
     for i in range(N):
-        # Build [nx, ny, 2] slice for this pair
+        # Preprocessing: reshape to ODP convention
         img_slice = np.stack([framesA[i, 0], framesB[i, 0]], axis=0)   # [2, ny, nx]
         img_slice = np.transpose(img_slice, (2, 1, 0)).astype(np.float32)  # [nx, ny, 2]
         np.nan_to_num(img_slice, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        
+
+        t0 = time.perf_counter()
         vx, vy = odp_chunk(img_slice, nstep_val, sm_param, m_frame, mx_val, my_val)
-    
+        elapsed += time.perf_counter() - t0
+
         # vx, vy shape: [nx, ny, 1] -> transpose to [1, ny, nx] -> squeeze
         flows[i, 0] = np.transpose(vx, (2, 1, 0))[0]
         flows[i, 1] = np.transpose(vy, (2, 1, 0))[0]
 
-    return flows
+    return flows, elapsed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Summary table
 # ─────────────────────────────────────────────────────────────────────────────
 
-def print_comparison_table(all_results):
+def print_comparison_table(all_results, all_times=None):
     """
     Side-by-side table: rows = metrics, columns = methods.
     Each cell shows  mean ± std.
+
+    Parameters
+    ----------
+    all_results : dict  {method: metrics_dict}
+    all_times   : dict  {method: total_wall_seconds} or None
+        If provided, a 'ms/pair' row is appended at the bottom of the table.
     """
     methods = list(all_results.keys())
     col_w   = max(18, max(len(m) for m in methods) + 2)
@@ -248,6 +273,20 @@ def print_comparison_table(all_results):
             row += f"  {cell:>{col_w}}"
         print(row)
 
+    # Speed row: ms per pair
+    if all_times:
+        print("-" * len(header))
+        row = f"  {'ms/pair':<12}"
+        for m in methods:
+            if m in all_times:
+                n_pairs = len(all_results[m]['EPE'])
+                ms_pair = all_times[m] * 1000.0 / max(n_pairs, 1)
+                cell    = f"{ms_pair:.2f} ms"
+            else:
+                cell = "N/A"
+            row += f"  {cell:>{col_w}}"
+        print(row)
+
     print(sep)
     print()
 
@@ -262,10 +301,18 @@ _METHOD_COLORS  = ['steelblue', 'darkorange', 'forestgreen',
 _QUIVER_COLORS  = ['lime', 'deepskyblue', 'lawngreen', 'lavender', 'turquoise', ]
 
 
-def plot_metric_bars(all_results, output_dir):
+def plot_metric_bars(all_results, output_dir, all_times=None):
     """
-    Four grouped bar charts (EPE, rEPE, AE, Fl), one bar per method.
-    Error bars show ± 1 std across test pairs.
+    Four accuracy bar charts (EPE, rEPE, AE, Fl) plus an optional speed chart
+    (ms/pair), one bar per method.  Error bars show ± 1 std across test pairs.
+
+    Parameters
+    ----------
+    all_results : dict  {method: metrics_dict}
+    output_dir  : str
+    all_times   : dict  {method: total_wall_seconds} or None
+        When provided a fifth subplot showing evaluation speed (ms/pair) is
+        added.  Lower is better.
     """
     methods = list(all_results.keys())
     colors  = _METHOD_COLORS[:len(methods)]
@@ -277,7 +324,10 @@ def plot_metric_bars(all_results, output_dir):
         ('Fl',   'Fl  (%)',   100.0),
     ]
 
-    fig, axes = plt.subplots(1, len(display), figsize=(4 * len(display), 5))
+    n_panels = len(display) + (1 if all_times else 0)
+    fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels, 5))
+    if n_panels == 1:
+        axes = [axes]
     fig.suptitle('Algorithm comparison  —  mean ± std across test pairs',
                  fontsize=12, fontweight='bold')
 
@@ -292,6 +342,31 @@ def plot_metric_bars(all_results, output_dir):
         ax.set_xticks(x)
         ax.set_xticklabels(methods, rotation=40, ha='right', fontsize=12)
         ax.set_ylabel(label);  ax.set_title(label)
+        ax.grid(True, alpha=0.3, axis='y')
+
+    # Speed panel — ms per pair, lower is better
+    if all_times:
+        ax = axes[len(display)]
+        ms_per_pair = []
+        for m in methods:
+            if m in all_times:
+                n_pairs = len(all_results[m]['EPE'])
+                ms_per_pair.append(all_times[m] * 1000.0 / max(n_pairs, 1))
+            else:
+                ms_per_pair.append(float('nan'))
+
+        bars = ax.bar(x, ms_per_pair, 0.6, color=colors,
+                      edgecolor='black', alpha=0.85)
+        # Annotate each bar with its value so exact numbers are readable
+        for bar, val in zip(bars, ms_per_pair):
+            if not np.isnan(val):
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() * 1.02,
+                        f"{val:.1f}", ha='center', va='bottom', fontsize=9)
+        ax.set_xticks(x)
+        ax.set_xticklabels(methods, rotation=40, ha='right', fontsize=12)
+        ax.set_ylabel('ms / pair')
+        ax.set_title('Speed  (ms/pair)')
         ax.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
@@ -486,6 +561,7 @@ if __name__ == '__main__':
 
     # ── Run methods in a fixed display order ──────────────────────────────
     all_flows = {}
+    all_times = {}   # {method: algorithm-only wall-clock seconds}
 
     # 1. PWCNet
     if not args.skip_pwc:
@@ -494,7 +570,7 @@ if __name__ == '__main__':
         else:
             print("PWCNet:")
             model_s = load_pwc(args.weights_pwc, device)
-            all_flows['PWC'] = run_bes_model(
+            all_flows['PWC'], all_times['PWC'] = run_bes_model(
                 model_s, test_dataset, device, args.batch_size
             )
             del model_s
@@ -506,23 +582,24 @@ if __name__ == '__main__':
         else:
             print("BESFlowNetS:")
             model_f = load_flownets(args.weights_flownets, device)
-            all_flows['FlowNetS'] = run_bes_model(
+            all_flows['FlowNetS'], all_times['FlowNetS'] = run_bes_model(
                 model_f, test_dataset, device, args.batch_size
             )
             del model_f
 
     # 3. ODP
     if not args.skip_odp:
-        all_flows['ODP'] = run_odp(test_A, test_B)
+        all_flows['ODP'], all_times['ODP'] = run_odp(test_A, test_B)
 
     # 4. Farneback
     if not args.skip_farneback:
-        all_flows['Farneback'] = run_farneback(test_A, test_B)
+        all_flows['Farneback'], all_times['Farneback'] = run_farneback(test_A, test_B)
 
     # 5. RAFT-small
     if not args.skip_raft:
-        all_flows['RAFT-small'] = run_raft_small(test_A, test_B, device,
-                                                  args.batch_size)
+        all_flows['RAFT-small'], all_times['RAFT-small'] = run_raft_small(
+            test_A, test_B, device, args.batch_size
+        )
 
     if not all_flows:
         print("No methods were run — nothing to compare.")
@@ -536,11 +613,11 @@ if __name__ == '__main__':
         all_results[method] = compute_all_metrics(flows_pred, flows_gt)
 
     # ── Summary table ─────────────────────────────────────────────────────
-    print_comparison_table(all_results)
+    print_comparison_table(all_results, all_times)
 
     # ── Figures ───────────────────────────────────────────────────────────
-    print("Saving figures...")
-    plot_metric_bars(all_results, args.output)
+    print("Plotting figures...")
+    plot_metric_bars(all_results, args.output, all_times)
     plot_comparison_examples(test_A, test_B, flows_gt, all_flows, args.output)
 
-    print(f"\nDone. All outputs saved to {args.output}")
+    print(f"\nDone. " ) #All outputs saved to {args.output}")
