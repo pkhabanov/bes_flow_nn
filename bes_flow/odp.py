@@ -84,8 +84,10 @@ def residual(strip, m, window):
     res = np.full((n, n), 1.0e10, dtype=np.float32)
     
     for i in range(n):
-        start_j = max(m - i - 1, i - m + 1)
-        end_j = min(i + m - 1, 2 * n - m - i - 1)
+        #start_j = max(m - i - 1, i - m + 1)
+        #end_j = min(i + m - 1, 2 * n - m - i - 1)
+        start_j = max(m - i, i - m)
+        end_j   = min(i + m, 2 * (n - 1) - m - i) # was 2*n
         
         for j in range(start_j, end_j + 1):
             val = 0.0
@@ -99,12 +101,15 @@ def residual(strip, m, window):
 @njit(nogil=True)
 def optimal_path(res, m, n):
     arf = np.full((n, n), 1.0e10, dtype=np.float32)
-    for i in range(m):
-        arf[m - i - 1, i] = 0.0
+    #for i in range(m):
+    #    arf[m - i - 1, i] = 0.0
+    # zero out start line
+    for i in range(m + 1):
+        arf[m - i, i] = 0.0
         
-    for k in range(m, n):
-        for q in range(m - 1):
-            i = k - q - 1
+    for k in range(m, n - 1): #range(m, n):
+        for q in range(m): #range(m - 1):
+            i = k - q #- 1
             j = k - m + q + 1
             arf[i, j] = min(
                 arf[i, j-1] + res[i, j-1] + res[i, j],
@@ -112,21 +117,25 @@ def optimal_path(res, m, n):
                 arf[i-1, j] + res[i-1, j] + res[i, j]
             )
 
-        for q in range(m):
-            i = k - q
-            j = k - m + q + 1
+        for q in range(m + 1): #range(m):
+            i = k - q + 1
+            j = k - m + q + 1 # was 0
             arf[i, j] = min(
                 arf[i, j-1] + res[i, j-1] + res[i, j],
                 arf[i-1, j-1] + 2.0 * (res[i-1, j-1] + res[i, j]),
                 arf[i-1, j] + res[i-1, j] + res[i, j]
             )
 
-    arf_end_line = np.zeros(m, dtype=np.float32)
-    for idx_m in range(m):
-        arf_end_line[idx_m] = arf[n - m + idx_m, n - 1 - idx_m]
+    # Proicess end line
+    #arf_end_line = np.zeros(m, dtype=np.float32)
+    arf_end_line = np.zeros(m + 1, dtype=np.float32)
+    for idx_m in range(m + 1): #range(m):
+        #arf_end_line[idx_m] = arf[n - m + idx_m, n - 1 - idx_m]
+        arf_end_line[idx_m] = arf[n - 1 - m + idx_m, n - 1 - idx_m]
     i_min = np.argmin(arf_end_line)
 
-    i_temp = n - m + i_min
+    #i_temp = n - m + i_min
+    i_temp = n - 1 - m + i_min
     j_temp = n - 1 - i_min
 
     max_len = 4 * n 
@@ -353,9 +362,9 @@ def odp_chunk(image_slice, nsteps, smooth_param, m_frame, mx_init, my_init):
                     temp_y[k, y_index] = (temp_y1[k] + temp_y2[k]) / 2.0 - iy[k]
 
             if y_steps > 1:
-                denom_y = nx - y_width - 1.0
+                denom_y = np.float32(nx - y_width - 1.0)
                 if denom_y > 0.0:
-                    mid_y = np.arange(nx - y_width, dtype=np.float32) / np.float32(denom_y * (y_steps - 1.0))
+                    mid_y = np.arange(nx - y_width, dtype=np.float32) / denom_y * np.float32(y_steps - 1.0)
                 else:
                     mid_y = np.zeros(nx - y_width, dtype=np.float32)
                     
@@ -423,9 +432,9 @@ def odp_chunk(image_slice, nsteps, smooth_param, m_frame, mx_init, my_init):
                     temp_x[k, x_index] = (temp_x1[k] + temp_x2[k]) / 2.0 - ix[k]
 
             if x_steps > 1:
-                denom_x = ny - x_width - 1.0
+                denom_x = np.float32(ny - x_width - 1.0)
                 if denom_x > 0.0:
-                    mid_x = np.arange(ny - x_width, dtype=np.float32) / np.float32(denom_x * (x_steps - 1.0))
+                    mid_x = np.arange(ny - x_width, dtype=np.float32) / denom_x * np.float32(x_steps - 1.0)
                 else:
                     mid_x = np.zeros(ny - x_width, dtype=np.float32)
                     
@@ -462,6 +471,8 @@ def odp_chunk(image_slice, nsteps, smooth_param, m_frame, mx_init, my_init):
                         cy[ii, jj] = iy2d[ii, jj] + vy_out[ii, jj, frame]
                 image_warp[:, :, i] = map_coordinates(image_slice[:, :, frame + i], cx, cy)
             
+            #if frame // 100 == 0:
+            #    print(f"frame: {frame} | smooth: {sm_param} | mx: {mx} | my: {my}")
             # update strip widths and smoothing params
             x_width = max(int(x_width / math.sqrt(2.0) + 0.5), 5)
             y_width = max(int(y_width / math.sqrt(2.0) + 0.5), 5)
