@@ -55,7 +55,7 @@ def load_model(model, weights_path, device, cfg=cfg):
 
     # Load the saved weight dictionary.
     # map_location ensures weights saved on GPU load correctly on CPU and vice versa.
-    state_dict = torch.load(weights_path, map_location=device)
+    state_dict = torch.load(weights_path, map_location=device, weights_only=True)
     model.load_state_dict(state_dict)
 
     # model.eval() is critical for inference:

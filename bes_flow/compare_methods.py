@@ -54,20 +54,20 @@ def load_pwc(weights_path, device):
     model = PWCNet(
         max_displacement = cfg.max_displacement,
     ).to(device)
-    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=True))
     model.eval()
     n = sum(p.numel() for p in model.parameters())
-    print(f"\n  Loaded PWCNet  ({n:,} params)  ← {weights_path}")
+    print(f"  Loaded PWCNet ({n:,} params) {weights_path}")
     return model
 
 
 def load_flownets(weights_path, device):
     """Load BESFlowNetS from a checkpoint."""
     model = BESFlowNetS().to(device)
-    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=True))
     model.eval()
     n = sum(p.numel() for p in model.parameters())
-    print(f"\n  Loaded BESFlowNetS             ({n:,} params)  ← {weights_path}")
+    print(f"  Loaded BESFlowNetS ({n:,} params) {weights_path}")
     return model
 
 
@@ -301,7 +301,7 @@ _METHOD_COLORS  = ['steelblue', 'darkorange', 'forestgreen',
 _QUIVER_COLORS  = ['lime', 'deepskyblue', 'lawngreen', 'lavender', 'turquoise', ]
 
 
-def plot_metric_bars(all_results, output_dir, all_times=None):
+def plot_metric_bars(all_results, all_times=None, output_dir=None):
     """
     Four accuracy bar charts (EPE, rEPE, AE, Fl) plus an optional speed chart
     (ms/pair), one bar per method.  Error bars show ± 1 std across test pairs.
@@ -362,7 +362,7 @@ def plot_metric_bars(all_results, output_dir, all_times=None):
             if not np.isnan(val):
                 ax.text(bar.get_x() + bar.get_width() / 2,
                         bar.get_height() * 1.02,
-                        f"{val:.1f}", ha='center', va='bottom', fontsize=9)
+                        f"{val:.1f}", ha='center', va='bottom', fontsize=10, fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(methods, rotation=40, ha='right', fontsize=12)
         ax.set_ylabel('ms / pair')
@@ -370,15 +370,16 @@ def plot_metric_bars(all_results, output_dir, all_times=None):
         ax.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
-    path = os.path.join(output_dir, 'comparison_metrics.png')
-    plt.savefig(path, dpi=150, bbox_inches='tight')
+    if output_dir is not None:
+        path = os.path.join(output_dir, 'comparison_metrics.png')
+        plt.savefig(path, dpi=150, bbox_inches='tight')
+        print(f"Saved: {path}")
     plt.show()
     plt.close('all')
-    print(f"Saved: {path}")
-
+    
 
 def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
-                             output_dir, n_examples=3):
+                             n_examples=3, output_dir=None):
     """
     Grid figure: one row per randomly chosen test pair.
 
@@ -395,6 +396,7 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
     n_pairs = len(framesA)
     rng     = np.random.default_rng(seed=0)
     indices = rng.choice(n_pairs, size=min(n_examples, n_pairs), replace=False)
+    indices = [5, 10, 50, 100]
 
     H, W   = framesA.shape[2], framesA.shape[3]
     qs     = 8
@@ -503,9 +505,10 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
                 ax.set_ylabel(f'<Vy> \npair {idx}', fontsize=10)
             col3 += 1
 
-    #path = os.path.join(output_dir, 'comparison_examples.png')
-    #plt.savefig(path, dpi=150, bbox_inches='tight')
-    #print(f"Saved: {path}")
+    if output_dir is not None:
+        path = os.path.join(output_dir, 'comparison_examples.png')
+        plt.savefig(path, dpi=150, bbox_inches='tight')
+        print(f"Saved: {path}")
     plt.show()
     plt.close('all')
 
@@ -566,9 +569,9 @@ if __name__ == '__main__':
     # 1. PWCNet
     if not args.skip_pwc:
         if args.weights_pwc is None:
-            print("  [PWC] --weights_pwc not provided — skipping")
+            print("\n  [PWC] --weights_pwc not provided — skipping")
         else:
-            print("PWCNet:")
+            print("\nPWCNet:")
             model_s = load_pwc(args.weights_pwc, device)
             all_flows['PWC'], all_times['PWC'] = run_bes_model(
                 model_s, test_dataset, device, args.batch_size
@@ -578,9 +581,9 @@ if __name__ == '__main__':
     # 2. BESFlowNetS
     if not args.skip_flownets:
         if args.weights_flownets is None:
-            print("  [FlowNetS] --weights_flownets not provided — skipping")
+            print("\n  [FlowNetS] --weights_flownets not provided — skipping")
         else:
-            print("BESFlowNetS:")
+            print("\nBESFlowNetS:")
             model_f = load_flownets(args.weights_flownets, device)
             all_flows['FlowNetS'], all_times['FlowNetS'] = run_bes_model(
                 model_f, test_dataset, device, args.batch_size
@@ -617,7 +620,7 @@ if __name__ == '__main__':
 
     # ── Figures ───────────────────────────────────────────────────────────
     print("Plotting figures...")
-    plot_metric_bars(all_results, args.output, all_times)
-    plot_comparison_examples(test_A, test_B, flows_gt, all_flows, args.output)
+    plot_metric_bars(all_results, all_times)
+    plot_comparison_examples(test_A, test_B, flows_gt, all_flows)
 
-    print(f"\nDone. " ) #All outputs saved to {args.output}")
+    print(f"\nDone. " ) 
