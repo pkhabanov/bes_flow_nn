@@ -181,7 +181,7 @@ class WarpingL2Loss(nn.Module):
             # Smoothness penalty on the predicted flow field
             smooth_loss, laplacian_loss = self.smoothness_loss(flow, flow_gt)
 
-            sup_loss = flow.new_zeros()
+            sup_loss = flow.new_zeros(())
 
             total = photo_loss + self.smooth_weight * smooth_loss + self.laplacian_weight * laplacian_loss
         
