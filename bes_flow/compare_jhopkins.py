@@ -60,6 +60,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import CenteredNorm
+from scipy.ndimage import gaussian_filter
 
 import torch
 
@@ -212,7 +213,7 @@ def fetch_from_api(auth_token, dataset_title='mixing',
 # Frame-pair and GT-flow construction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_pairs(images, vx, vy, times, x_points, y_points):
+def build_pairs(images, vx, vy, times, x_points, y_points, psf_fwhm=None):
     """
     Build consecutive frame pairs and convert velocity to GT pixel displacement.
 
@@ -227,6 +228,12 @@ def build_pairs(images, vx, vy, times, x_points, y_points):
     where dt[i] = times[i+1] - times[i] is the inter-frame interval and
     dx_phys / dy_phys are the physical sizes of one pixel.
 
+    psf_fwhm : float or None
+        Full-width at half-maximum (in pixels) of an isotropic Gaussian kernel
+        applied to images and velocity fields before building pairs to mimic
+        the BES point-spread function.  The corresponding sigma is computed as
+        sigma = fwhm / (2 * sqrt(2 * ln2)) ≈ fwhm / 2.355
+
     Returns
     -------
     framesA   : (N_pairs, 1, ny, nx) float32 in [0, 1]
@@ -240,6 +247,17 @@ def build_pairs(images, vx, vy, times, x_points, y_points):
     dx_phys = (x_points[-1] - x_points[0]) / (nx - 1)   # physical size per pixel
     dy_phys = (y_points[-1] - y_points[0]) / (ny - 1)
 
+    if psf_fwhm is not None:
+        psf_sigma = psf_fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        print(f"  Applying BES PSF (FWHM={psf_fwhm:.1f} px, "
+              f"sigma={psf_sigma:.2f} px) to images and velocities...")
+        images = np.stack([gaussian_filter(images[i], sigma=psf_sigma)
+                           for i in range(Nframes)], axis=0)
+        vx     = np.stack([gaussian_filter(vx[i], sigma=psf_sigma)
+                           for i in range(Nframes)], axis=0)
+        vy     = np.stack([gaussian_filter(vy[i], sigma=psf_sigma)
+                           for i in range(Nframes)], axis=0)
+    
     # Normalise entire image stack to [0, 1] using global min/max
     img_min = images.min()
     img_max = images.max()
@@ -384,9 +402,9 @@ if __name__ == '__main__':
         )
 
     # ── Build frame pairs and GT flow ─────────────────────────────────────
-    n0 = 10. # skip first n0 frames
+    n0 = 10  # skip first n0 frames
     framesA, framesB, flows_gt = build_pairs(images[n0:,:,:], vx[n0:,:,:], vy[n0:,:,:], times[n0:],
-                                             x_points, y_points)
+                                             x_points, y_points, psf_fwhm=8)
 
     test_dataset = BESDataset(framesA, framesB, flows_gt, augment=False)
 

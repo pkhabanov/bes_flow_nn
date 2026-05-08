@@ -825,7 +825,7 @@ if __name__ == '__main__':
                 train_frames, val_frames, test_frames, cfg
             )
     # get model checkpoint
-    if args.checkpoint is not None:
+    if args.checkpoint is not None and args.skip_train:
         best_ckpt = args.checkpoint
     else:
         # Load the best checkpoint (lowest val EPE during training)

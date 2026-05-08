@@ -11,11 +11,12 @@ class Config:
     # --- Data ------------------------------------------------------------
     # Path to the NumPy array of raw BES frames, shape (N, 64, 64).
     # Each frame is a single 2-D snapshot of plasma density fluctuations.
-    data_path: str = "raw_data/194313_t=2620-2640_f=30-200_2000fr.h5"
+    data_path: str = "raw_data/194313_t=2600-2620_f=30-200_2000fr.h5"
 
     # Fraction of frames held out for validation and training
     val_split: float = 0.1
     test_split: float = 0.1
+    test_seed:    int = 42   # fixed seed for reproducible test generation
 
     # Flow type used for synthetic training pair generation.
     # 'smooth' : Gaussian random field       
@@ -74,13 +75,6 @@ class Config:
     # Number of parallel CPU workers used to load and pre-process data.
     # Set to 0 to load data in the main process (useful for debugging).
     num_workers: int = 8
-
-    # --- Test / evaluation -----------------------------------------------
-    # Number of synthetic pairs used for final evaluation on the test set.
-    # These are generated once with a fixed seed (test_seed) and never used
-    # during training.
-    n_test_pairs: int = 300
-    test_seed:    int = 42       # fixed seed for reproducible test generation
     
     # --- Output -------------------------------------------------------------
     # Directory where model weights are saved after each epoch.
