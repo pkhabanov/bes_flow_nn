@@ -330,7 +330,6 @@ def _make_metadata(cfg):
         'val_split'        : float(cfg.val_split),
         'test_split'       : float(cfg.test_split),
         'val_seed'         : int(cfg.val_seed),
-        'n_test_pairs'     : int(cfg.n_test_pairs),
         'test_seed'        : int(cfg.test_seed),
     }
 
@@ -708,10 +707,9 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
         flow_type         = cfg.flow_type,
     )
 
-    np.random.set_state(rng_state)  # restore for training
+    np.random.set_state(rng_state)  # restore random state
 
     # Test set - fixed test_seed; may be empty during curriculum stages
-    # n_pairs_per_frame is chosen so that the total is ≥ cfg.n_test_pairs.
     if len(test_frames) == 0:
         print("  Skipping test set (empty test_frames).")
         empty_f = np.empty((0, 1, H, W), dtype=np.float32)
@@ -720,12 +718,11 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
         test_flows = empty_v
     else:
         print("Generating test set (fixed seed, independent of training):")
-        n_test_ppf = max(1, cfg.n_test_pairs // len(test_frames))
         rng_state  = np.random.get_state()
         np.random.seed(cfg.test_seed)
         test_A, test_B, test_flows = generate_dataset(
             test_frames,
-            n_pairs_per_frame = n_test_ppf,
+            n_pairs_per_frame = cfg.n_pairs_per_frame,
             max_shift         = cfg.max_shift,
             noise_std         = cfg.noise_std,
             flow_type         = cfg.flow_type,
@@ -754,7 +751,6 @@ if __name__ == "__main__":
         num_workers        : int   = 0
         n_pairs_per_frame  : int   = 1
         val_seed           : int   = 0
-        n_test_pairs       : int   = 20
         test_seed          : int   = 42
         # Set to None to skip saving
         dataset_cache_path : str   = 'synthetic_data/test_dataset.h5'

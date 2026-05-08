@@ -818,7 +818,12 @@ if __name__ == '__main__':
         # save history to json
         with open(history_path, 'w') as f:
             json.dump(loss_history, f, indent=2)
-    
+    else:
+        # if skipping training, still set up proper cache path
+        cfg = replace(
+                cfg,
+                dataset_cache_path = resolve_cache_path(cfg.dataset_cache_path, cfg.flow_type),
+            )
     # ── Evaluate on the test set ──────────────────────────────────────────
     # get test data
     train_dataset, val_dataset, test_dataset = make_datasets(

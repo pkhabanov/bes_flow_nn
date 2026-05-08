@@ -16,7 +16,7 @@ class Config:
     # Fraction of frames held out for validation and training
     val_split: float = 0.1
     test_split: float = 0.1
-    test_seed:    int = 42   # fixed seed for reproducible test generation
+    test_seed: int = 42   # fixed seed for reproducible test generation
 
     # Flow type used for synthetic training pair generation.
     # 'smooth' : Gaussian random field       
