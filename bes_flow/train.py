@@ -4,8 +4,7 @@
 #
 # Usage
 # ─────
-#   python -m bes_flow.train                   # single flow type
-#   python -m bes_flow.train --curriculum      # LR-curriculum training
+#   python -m bes_flow.train 
 
 import os
 import json
@@ -310,7 +309,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
     scheduler    : CosineAnnealingLR
     cfg          : Config
     device       : torch.device
-    start_epoch  : int — first epoch number (>1 when resuming/curriculum)
+    start_epoch  : int — first epoch number
     total_epochs : int — last epoch number inclusive (defaults to cfg.num_epochs)
 
     Returns
@@ -512,71 +511,6 @@ def plot_loss_history(history, cfg):
     #print(f"\nLoss plot saved to {plot_path}")
 
 
-def plot_curriculum_loss(full_history, stages, cfg):
-    """
-    Curriculum loss history with stage-transition vertical markers
-    and shaded background regions per stage.
-    """
-    epochs = np.arange(1, len(full_history['total']) + 1)
-
-    boundaries = []
-    cumulative = 0
-    for stage in stages[:-1]:
-        cumulative += stage['epochs']
-        boundaries.append(cumulative)
-
-    fig, axes = plt.subplots(2, 3, figsize=(20, 8))
-    fig.suptitle(
-        f"Curriculum training  |  {epochs[-1]} total epochs",
-        fontsize=12, fontweight='bold',
-    )
-
-    components = [
-        ('total',       'Total loss (train)',  'steelblue'),
-        ('photometric', 'Photometric loss',    'darkorange'),
-        ('smoothness',  'Smoothness loss',     'forestgreen'),
-        ('laplacian',   'Laplacian loss',     'darkturquoise'),
-        ('val_total',   'Total loss (val)',    'crimson'),
-        ('val_epe',     'Val EPE  (px)',       'teal'),
-    ]
-    stage_colors = ['#ccddaa', '#cceeff', '#eeeebb', '#ffcccc']
-    stage_labels = [s['name'] for s in stages]
-
-    for ax, (key, label, color) in zip(axes.flatten()[:len(components)], components):
-        values = full_history[key]
-        
-        # Shade background by stage for immediate visual identification
-        prev = 0
-        for boundary, bg, slabel in zip(
-            boundaries + [len(epochs)], stage_colors, stage_labels
-        ):
-            ax.axvspan(prev, boundary, alpha=0.2, color=bg, label=slabel)
-            prev = boundary
-        
-        # Loss curve + running mean
-        ax.plot(epochs, values, color='k', linewidth=2, alpha=0.8)
-        #window       = max(1, len(epochs) // 10)
-        #running_mean = np.convolve(values, np.ones(window) / window, mode='valid')
-        #ax.plot(epochs[window - 1:], running_mean,
-        #        color='r', linewidth=2.5, linestyle='--', alpha=0.9)
-        
-        # Vertical lines at stage transitions
-        for b in boundaries:
-            ax.axvline(b, color='black', linewidth=1.0, linestyle=':', alpha=0.7)
-
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('Loss')
-        ax.set_title(label)
-        ax.grid(True, alpha=0.3)  
-        ax.set_xlim(1, len(epochs))
-    axes[0, 0].legend(fontsize=12, loc='upper right')
-    plt.tight_layout()
-    plt.show()
-    #plot_path = os.path.join(cfg.output_dir, 'curriculum_loss_history.png')
-    #plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    #print(f"\nCurriculum loss plot saved to {plot_path}")
-
-
 def resolve_cache_path(base, flow_type):
     ''' Build a per-stage cache path by inserting the flow_type before the
     file extension. If no cache path is configured, all stages run without caching.
@@ -587,132 +521,11 @@ def resolve_cache_path(base, flow_type):
     return f"{root}_{flow_type}{ext}"
 
 
-def curriculum_train(model, train_frames, val_frames, loss_fn, cfg, device):
-    """
-    Four-stage curriculum training, each stage on a different flow type.
-
-    A new train/val dataset is generated at the start of every stage so
-    that the network sees progressively more complex flow fields:
-
-        Stage 1: smooth Gaussian flow     — learns basic displacement tracking
-        Stage 2: sinusoidal mode flow     — learns multi-scale structure
-        Stage 3: zonal sin + turbulence   — adapts to shear-dominated flow
-        Stage 4: zonal Gauss well + turb  — adapts to realistic flow conditions
-
-    The learning rate is also reduced across stages.  
-
-    Each stage uses its own HDF5 cache derived from the base cache path
-    This ensures each stage's data is cached independently and no stage
-    overwrites another's cache.  If cfg.dataset_cache_path is None,
-    caching is skipped for all stages.
-
-    Parameters
-    ----------
-    model        : initialised but untrained model
-    train_frames : (N_train, H, W) float array — raw BES training frames
-    val_frames   : (N_val,   H, W) float array — raw BES validation frames
-    loss_fn      : WarpingL2Loss
-    cfg          : Config
-    device       : torch.device
-
-    Returns
-    -------
-    full_history : dict — loss history concatenated across all stages
-    """
-    os.makedirs(cfg.checkpoint_dir, exist_ok=True)
-    os.makedirs(cfg.output_dir,     exist_ok=True)
-
-     # Define the training stages.
-    total  = cfg.num_epochs
-    stages = [
-        {'name': 'Stage 1 — smooth flow',           'flow_type': 'smooth',
-         'epochs': total // 4,              'lr': cfg.learning_rate},
-        {'name': 'Stage 2 — sinusoidal modes',       'flow_type': 'modes',
-         'epochs': total // 4,              'lr': cfg.learning_rate},
-        {'name': 'Stage 3 — zonal Gauss well + turb','flow_type': 'well',
-         'epochs': total // 4,              'lr': cfg.learning_rate},
-        {'name': 'Stage 4 — zonal sin + turbulence', 'flow_type': 'zonal',
-         'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate},
-    ]
-
-    full_history = {
-        'total': [], 'photometric': [], 'smoothness': [], 'laplacian': [],
-        'supervised': [], 'val_total': [], 'val_epe': [],
-    }
-    global_epoch = 0  # tracks absolute epoch number across all stages
-
-    for i, stage in enumerate(stages, start=1):
-        print(f"\n{'═'*70}")
-        print(f"  {stage['name']}  |  epochs: {stage['epochs']}  |  "
-              f"lr: {stage['lr']:.2e}")
-        print(f"{'═'*70}\n")
-
-        # Build a cfg copy with the stage's flow_type and its own cache path.
-        # make_datasets receives an explicit (empty) test_frames array
-        stage_cfg = replace(
-            cfg,
-            flow_type          = stage['flow_type'],
-            dataset_cache_path = resolve_cache_path(cfg.dataset_cache_path, stage['flow_type']),
-        )
-
-        # Generate (or load from cache) train/val for this flow type.
-        # Pass an empty array for test_frames — we do not need a test set here.
-        stage_train_ds, stage_val_ds, _ = make_datasets(
-            train_frames,
-            val_frames,
-            np.empty((0, *train_frames.shape[1:]), dtype=np.float32),
-            stage_cfg,
-        )
-        stage_train_loader, stage_val_loader, _ = make_dataloaders(
-            stage_train_ds, stage_val_ds,
-            stage_val_ds,  
-            stage_cfg,
-        )
-        
-        # Reset optimiser with new learning rate 
-        optimizer = torch.optim.Adam(model.parameters(), lr=stage['lr'])
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=stage['epochs']
-        )
-
-        # Run training for this stage
-        stage_history = train(
-            model, stage_train_loader, stage_val_loader,
-            loss_fn, optimizer, scheduler,
-            stage_cfg, device,
-            start_epoch  = global_epoch + 1,
-            total_epochs = global_epoch + stage['epochs'],
-        )
-
-        for key in full_history:
-            full_history[key].extend(stage_history[key])
-
-        global_epoch += stage['epochs']
-
-        # Save a stage-level checkpoint so we can reload from the end
-        # of any stage without re-running the whole curriculum
-        ckpt_name = f"model_stage{i}_{stage['flow_type']}_final.pt"
-        torch.save(
-            model.state_dict(),
-            os.path.join(cfg.checkpoint_dir, ckpt_name),
-        )
-        print(f"\nStage checkpoint saved: {ckpt_name}")
-        
-        del stage_train_loader, stage_val_loader
-        del stage_train_ds, stage_val_ds
-
-    # Plot the full curriculum loss history
-    #plot_curriculum_loss(full_history, stages, cfg)
-    return full_history
-
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(
         description='Train and evaluate the BES CNN'
     )
-    parser.add_argument('--curriculum', action='store_true',
-                        help='Use four-stage LR-curriculum training')
     parser.add_argument('--skip_train', action='store_true',
                         help='Use to skip training')
     parser.add_argument('--checkpoint', type=str,
@@ -783,40 +596,32 @@ if __name__ == '__main__':
     
     if not args.skip_train:
         # ── Train ─────────────────────────────────────────────────────────────
-        if args.curriculum:
-            # Curriculum train - several flow types
-            loss_history = curriculum_train(
-                model, train_frames, val_frames, loss_fn, cfg, device
-            )
-            history_path = cfg.output_dir + 'train_history_curriculum.json'
-        else:
-            # Single flow type training
-            # update dataset_cache_path in cfg
-            cfg = replace(
-                cfg,
-                dataset_cache_path = resolve_cache_path(cfg.dataset_cache_path, cfg.flow_type),
-            )
-            # ── Build datasets ───────────────────────────────────────────────
-            train_dataset, val_dataset, test_dataset = make_datasets(
-                train_frames, val_frames, test_frames, cfg
-            )
-            # ── Build DataLoaders ─────────────────────────────────────────────────
-            train_loader, val_loader, test_loader = make_dataloaders(
-                train_dataset, val_dataset, test_dataset, cfg
-            )
-            optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=cfg.num_epochs*1.25
-            )
-            print("Starting single-stage training...\n")
-            loss_history = train(
-                model, train_loader, val_loader,
-                loss_fn, optimizer, scheduler,
-                cfg, device,
-            )
-            history_path = cfg.output_dir + f'train_history_{cfg.flow_type}.json'
-            if args.plot_results:
-                plot_loss_history(loss_history, cfg)
+        # update dataset_cache_path in cfg
+        cfg = replace(
+            cfg,
+            dataset_cache_path = resolve_cache_path(cfg.dataset_cache_path, cfg.flow_type),
+        )
+        # ── Build datasets ───────────────────────────────────────────────
+        train_dataset, val_dataset, test_dataset = make_datasets(
+            train_frames, val_frames, test_frames, cfg
+        )
+        # ── Build DataLoaders ─────────────────────────────────────────────────
+        train_loader, val_loader, test_loader = make_dataloaders(
+            train_dataset, val_dataset, test_dataset, cfg
+        )
+        optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cfg.num_epochs*1.25
+        )
+        print("Starting single-stage training...\n")
+        loss_history = train(
+            model, train_loader, val_loader,
+            loss_fn, optimizer, scheduler,
+            cfg, device,
+        )
+        history_path = cfg.output_dir + f'train_history_{cfg.flow_type}.json'
+        if args.plot_results:
+            plot_loss_history(loss_history, cfg)
         # save history to json
         with open(history_path, 'w') as f:
             json.dump(loss_history, f, indent=2)
@@ -866,5 +671,4 @@ if __name__ == '__main__':
             {'name': 'Stage 4 — zonal sin + turbulence', 'flow_type': 'zonal',
             'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 2},
             ]
-       # plot_curriculum_loss(full_history, stages, cfg)
         plot_loss_history(full_history, cfg)

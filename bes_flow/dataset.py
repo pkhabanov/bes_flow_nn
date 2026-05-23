@@ -709,7 +709,7 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
 
     np.random.set_state(rng_state)  # restore random state
 
-    # Test set - fixed test_seed; may be empty during curriculum stages
+    # Test set - fixed test_seed
     if len(test_frames) == 0:
         print("  Skipping test set (empty test_frames).")
         empty_f = np.empty((0, 1, H, W), dtype=np.float32)

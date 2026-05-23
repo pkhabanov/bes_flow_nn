@@ -18,7 +18,7 @@ from bes_flow.dataset import generate_dataset, save_dataset_cache
 from bes_flow.config import cfg
 
 
-# The four flow types that make up the mixed dataset, in curriculum order.
+# The four flow types that make up the mixed dataset
 FLOW_TYPES = ['smooth', 'modes', 'well', 'zonal']
  
 def _generate_pairs(frames, flow_types, n_pairs_per_frame,
