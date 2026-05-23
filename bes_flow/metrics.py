@@ -394,7 +394,7 @@ def plot_qualitative_examples(framesA, framesB, flows_pred, flows_gt,
         ax2 = fig.add_subplot(gs[row, 2])
         ax2.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
         ax2.quiver(xx, yy, pred[0][yy, xx], pred[1][yy, xx],
-                   color='yellow', scale=60, scale_units='width',
+                   color='lime', scale=60, scale_units='width',
                    width=0.005, headwidth=4)
         if row == 0:  ax2.set_title('Frame B + Predicted flow')
         ax2.set_xticks([]);  ax2.set_yticks([])

@@ -192,7 +192,7 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
         # col 1 — Frame B with GT flow quiver
         ax1 = fig.add_subplot(gs[row, 1])
         ax1.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
-        ax1.quiver(xx, yy, gt[0][yy, xx], -gt[1][yy, xx],
+        ax1.quiver(xx, yy, gt[0][yy, xx], gt[1][yy, xx],
                    color='cyan', scale=60, scale_units='width',
                    width=0.005, headwidth=4)
         if row == 0:  ax1.set_title(col_titles[1])
@@ -201,8 +201,8 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
         # col 2 — Frame B with predicted flow quiver
         ax2 = fig.add_subplot(gs[row, 2])
         ax2.imshow(fB, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
-        ax2.quiver(xx, yy, pred[0][yy, xx], -pred[1][yy, xx],
-                   color='yellow', scale=60, scale_units='width',
+        ax2.quiver(xx, yy, pred[0][yy, xx], pred[1][yy, xx],
+                   color='lime', scale=60, scale_units='width',
                    width=0.005, headwidth=4)
         if row == 0:  ax2.set_title(col_titles[2])
         ax2.set_xticks([]);  ax2.set_yticks([])
@@ -467,14 +467,14 @@ def plot_loss_history(history, cfg):
     Two-row grid of train/val loss curves with running-mean overlay.
 
     Row 1: total | photometric | smoothness | supervised
-    Row 2: val total | val EPE
+    Row 2: laplacian | val total | val EPE
     """
     epochs = np.arange(1, len(history['total']) + 1)
 
-    fig, axes = plt.subplots(2, 4, figsize=(20, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(20, 8))
     fig.suptitle(
         f"Training history  |  flow: {cfg.flow_type}  |  "
-        f"epochs: {cfg.num_epochs}  |  lr: {cfg.learning_rate}",
+        f"epochs: {len(epochs)}  |  lr: {cfg.learning_rate}",
         fontsize=14, fontweight='bold',
     )
 
@@ -482,7 +482,7 @@ def plot_loss_history(history, cfg):
         ('total',       'Total loss (train)',   'steelblue',     axes[0, 0], 'Loss'),
         ('photometric', 'Photometric loss',     'darkorange',    axes[0, 1], 'Loss'),
         ('smoothness',  'Smoothness loss',      'forestgreen',   axes[0, 2], 'Loss'),
-        ('supervised',  'Supervised loss',      'mediumpurple',  axes[0, 3], 'Loss'),
+        #('supervised',  'Supervised loss',      'mediumpurple',  axes[0, 3], 'Loss'),
         ('laplacian',   'Laplacian loss',       'darkturquoise', axes[1, 0], 'Loss'),
         ('val_total',   'Total loss (val)',     'crimson',       axes[1, 1], 'Loss'),
         ('val_epe',     'Val EPE  (px)',        'teal',          axes[1, 2], 'EPE (px)'),
@@ -490,18 +490,20 @@ def plot_loss_history(history, cfg):
 
     for key, label, color, ax, ylabel in components:
         values = history[key]
-        ax.plot(epochs, values, color=color, linewidth=1.2, alpha=0.5,
-                label='Per epoch')
-        window       = max(1, len(epochs) // 10)
-        running_mean = np.convolve(values, np.ones(window) / window, mode='valid')
-        ax.plot(epochs[window - 1:], running_mean,
-                color=color, linewidth=2.5, linestyle='--', alpha=0.9,
-                label=f'Running mean (w={window})')
-        ax.set_xlabel('Epoch');  ax.set_ylabel(ylabel)
-        ax.set_title(label);     ax.legend(fontsize=10)
-        ax.grid(True, alpha=0.3);  ax.set_xlim(1, len(epochs))
+        ax.plot(epochs, values, color=color, linewidth=2, alpha=0.8,)
+        #window       = max(1, len(epochs) // 10)
+        #running_mean = np.convolve(values, np.ones(window) / window, mode='valid')
+        #ax.plot(epochs[window - 1:], running_mean,
+        #        color=color, linewidth=2.5, linestyle='--', alpha=0.9,
+        #        label=f'Running mean (w={window})')
+        ax.set_xlabel('Epoch', fontsize=12);  
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.set_title(label);     
+        #ax.legend(fontsize=14)
+        ax.grid(True, alpha=0.3);  
+        ax.set_xlim(1, len(epochs))
 
-    axes[1, 3].set_visible(False)
+    #axes[1, 3].set_visible(False)
 
     plt.tight_layout()
     plt.show()
@@ -715,8 +717,8 @@ if __name__ == '__main__':
                         help='Use to skip training')
     parser.add_argument('--checkpoint', type=str,
                         help='Load model checkpoint to start with')
-    parser.add_argument('--model', type=str, default='pwc',
-                        help='Model type: pwc or flownet')
+    parser.add_argument('--model', type=str, default='pwcnet',
+                        help='Model type: pwcnet or flownet')
     parser.add_argument('--plot_results', action='store_true',
                         help='Plot training loss history')
     args = parser.parse_args()
@@ -753,7 +755,7 @@ if __name__ == '__main__':
     if args.model == 'flownet':
         print('Initializing BESFlowNetS')
         model = BESFlowNetS()
-    elif args.model == 'pwc':
+    elif args.model == 'pwcnet':
         print('Initializing PWCNet')
         model = PWCNet(max_displacement=cfg.max_displacement)
     
@@ -850,7 +852,7 @@ if __name__ == '__main__':
 
     # plot history
     if args.plot_results:
-        history_path = 'outputs-' + args.model + '-sup/train_history_curriculum.json'
+        history_path = 'outputs-' + args.model + '/train_history_mixed.json'
         with open(history_path, 'r') as file:
             full_history = json.load(file)
         total = len(full_history['total'])
@@ -864,4 +866,5 @@ if __name__ == '__main__':
             {'name': 'Stage 4 — zonal sin + turbulence', 'flow_type': 'zonal',
             'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 2},
             ]
-        plot_curriculum_loss(full_history, stages, cfg)
+       # plot_curriculum_loss(full_history, stages, cfg)
+        plot_loss_history(full_history, cfg)
