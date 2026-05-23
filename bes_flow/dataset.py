@@ -746,7 +746,7 @@ if __name__ == "__main__":
         test_split         : float = 0.1
         max_shift          : float = 12.0
         noise_std          : float = 0.02
-        flow_type          : str   = 'well'
+        flow_type          : str   = 'mixed'
         batch_size         : int   = 4
         num_workers        : int   = 0
         n_pairs_per_frame  : int   = 1
@@ -758,7 +758,7 @@ if __name__ == "__main__":
     cfg = TestConfig()
 
     # load bes frames
-    fname = 'raw_data/194313_t=2620-2640_f=30-200_2000fr.h5'
+    fname = "raw_data/194313_t=2600-2620_f=30-200_2000fr.h5"
     print('\nLoading images ' + fname)
     with h5py.File(fname, 'r') as hf:
         all_frames = hf['images'][:]

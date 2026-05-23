@@ -23,7 +23,7 @@ class Config:
     # 'modes'  : sinusoidal mode superposition 
     # 'zonal'  : zonal sinusoidal flow + turbulence     
     # 'well'   : zonal Gaussian flow (Er well) + turbulence    
-    flow_type: str = 'zonal'
+    flow_type: str = 'mixed'
 
     # Maximum pixel displacement applied when generating synthetic frame pairs.
     # Drawn uniformly from [-max_shift, +max_shift] pixels in both x and y.

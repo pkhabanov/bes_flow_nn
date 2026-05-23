@@ -1,6 +1,7 @@
 # Large data files
 raw_data/
 synthetic_data/
+*.gif
 
 # Generated data
 checkpoints*/
