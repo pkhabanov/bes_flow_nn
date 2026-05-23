@@ -41,7 +41,6 @@ from bes_flow.model_pwcnet import PWCNet
 from bes_flow.model_s import BESFlowNetS
 from bes_flow.dataset import load_dataset_cache, BESDataset
 from bes_flow.metrics import compute_all_metrics
-from bes_flow.train   import predict_dataset
 from bes_flow.odp import odp_chunk
 
 
@@ -80,19 +79,48 @@ def load_flownets(weights_path, device):
 
 def run_bes_model(model, dataset, device, batch_size=16):
     """
-    Run a BES neural network on the test dataset.
-    Uses predict_dataset() from train.py which reads frames directly from
-    the dataset's numpy arrays without augmentation.
+    Run the model on every pair in a BESDataset and return predicted flows.
+
+    Parameters
+    ----------
+    model      : trained model in eval mode
+    dataset    : BESDataset — framesA/B/flows_gt accessible as attributes
+    device     : torch.device
+    batch_size : int
 
     Returns
     -------
-    flows   : (N, 2, H, W) float32
-    elapsed : float — wall-clock seconds spent in predict_dataset only
+    flows_pred : (n_pairs, 2, H, W) float32 numpy array
+    elapsed    : float - elapsed time of model inference
     """
-    t0 = time.perf_counter()
-    flows = predict_dataset(model, dataset, device, batch_size)
-    elapsed = time.perf_counter() - t0
-    return flows, elapsed
+    model.eval()
+    N          = len(dataset)
+    H, W       = dataset.framesA.shape[2], dataset.framesA.shape[3]
+    flows_pred = np.zeros((N, 2, H, W), dtype=np.float32)
+
+    # Warmup (~100 iterations, not timed)
+    warmup_batch = min(batch_size, N)
+    warmup_iters = max(1, math.ceil(100 / warmup_batch))
+    with torch.no_grad():
+        wA = torch.tensor(dataset.framesA[:warmup_batch]).to(device)
+        wB = torch.tensor(dataset.framesB[:warmup_batch]).to(device)
+        for _ in range(warmup_iters):
+            _out = model(wA, wB)
+    del wA, wB, _out
+    
+    elapsed = 0.0
+    with torch.no_grad():
+        for start in range(0, N, batch_size):
+            end    = min(start + batch_size, N)
+            batchA = torch.tensor(dataset.framesA[start:end]).to(device)
+            batchB = torch.tensor(dataset.framesB[start:end]).to(device)
+            t0 = time.perf_counter()
+            flows_pred[start:end] = model(batchA, batchB).cpu().numpy()
+            elapsed += (time.perf_counter() - t0)
+    
+    ms_per_frame = elapsed * 1000.0 / N
+    del model
+    return flows_pred, elapsed, ms_per_frame
 
 
 def run_farneback(framesA, framesB):
@@ -109,7 +137,7 @@ def run_farneback(framesA, framesB):
     flows = np.zeros((N, 2, H, W), dtype=np.float32)
 
     elapsed = 0.0
-    print("\n  Running Farneback...")
+    print("\nRunning Farneback...")
     for i in range(N):
         # Preprocessing: normalise to uint8
         fA = (framesA[i, 0] * 255).astype(np.uint8)
@@ -121,12 +149,13 @@ def run_farneback(framesA, framesB):
             pyr_scale=0.5, levels=3, winsize=15,
             iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
         )   # (H, W, 2)  channel 0 = dx, channel 1 = dy
-        elapsed += time.perf_counter() - t0
+        elapsed += (time.perf_counter() - t0)
 
         flows[i, 0] = flow_cv[:, :, 0]
         flows[i, 1] = flow_cv[:, :, 1]
 
-    return flows, elapsed
+    ms_per_frame = elapsed * 1000.0 / N
+    return flows, elapsed, ms_per_frame
 
 
 def run_raft_small(framesA, framesB, device, batch_size=16):
@@ -144,7 +173,7 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
             "Install with: pip install torchvision>=0.13"
         )
 
-    print("\n  Loading RAFT-small (pretrained weights)...")
+    print("\nLoading RAFT-small (pretrained weights)...")
     raft = raft_small(weights=Raft_Small_Weights.DEFAULT).to(device)
     raft.eval()
 
@@ -155,8 +184,20 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
 
     flows = np.zeros((N, 2, H, W), dtype=np.float32)
 
+    # Warmup (~100 iterations, not timed)
+    warmup_batch = min(batch_size, N)
+    warmup_iters = max(1, math.ceil(100 / warmup_batch))
+    with torch.no_grad():
+        wA = torch.tensor(framesA[:warmup_batch]).repeat(1, 3, 1, 1).to(device)
+        wB = torch.tensor(framesB[:warmup_batch]).repeat(1, 3, 1, 1).to(device)
+        wA = F.interpolate(wA, size=(H_up, W_up), mode='bilinear', align_corners=False)
+        wB = F.interpolate(wB, size=(H_up, W_up), mode='bilinear', align_corners=False)
+        for _ in range(warmup_iters):
+            _out = raft(wA, wB)
+    del wA, wB, _out
+
     elapsed = 0.0
-    print("\n  Running RAFT-small...")
+    print("Running RAFT-small...")
     with torch.no_grad():
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)
@@ -172,7 +213,7 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
             # RAFT returns a list of iterative flow estimates; take the last
             t0 = time.perf_counter()
             flow_predictions = raft(bA, bB)[-1]
-            elapsed += time.perf_counter() - t0
+            elapsed += (time.perf_counter() - t0)
 
             # Downsample back to 64x64 and rescale pixel values
             # Take into account flow scaling: 
@@ -182,8 +223,9 @@ def run_raft_small(framesA, framesB, device, batch_size=16):
             flow_down = flow_down * scale
             flows[start:end] = flow_down.cpu().numpy()
 
+    ms_per_frame = elapsed * 1000.0 / N
     del raft
-    return flows, elapsed
+    return flows, elapsed, ms_per_frame
 
 
 def run_odp(framesA, framesB, nstep='default', smooth=15, mframe=2, mx='default', my='default'):
@@ -206,9 +248,17 @@ def run_odp(framesA, framesB, nstep='default', smooth=15, mframe=2, mx='default'
     if nstep_val is None: nstep_val = int(2.0 * math.log(nx / 10.0) / math.log(2.0) + 0.5)
     if mx_val is None: mx_val = int((nx / 6.0) / 2 + 0.5) * 2 + 1
     if my_val is None: my_val = int((ny / 6.0) / 2 + 0.5) * 2 + 1
+
+    # Warmup (~100 iterations, not timed)
+    w_slice = np.stack([framesA[0, 0], framesB[0, 0]], axis=0)
+    w_slice = np.transpose(w_slice, (2, 1, 0)).astype(np.float32)
+    np.nan_to_num(w_slice, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    for _ in range(100):
+        odp_chunk(w_slice, nstep_val, sm_param, m_frame, mx_val, my_val)
+    del w_slice
     
     elapsed = 0.0
-    print("\n  Running ODP...")
+    print("\nRunning ODP...")
     print(f"n_steps: {nstep_val} | smooth: {sm_param} | mframe: {m_frame} | mx: {mx_val} | my: {my_val}")
     # loop over image pairs
     for i in range(N):
@@ -219,13 +269,14 @@ def run_odp(framesA, framesB, nstep='default', smooth=15, mframe=2, mx='default'
 
         t0 = time.perf_counter()
         vx, vy = odp_chunk(img_slice, nstep_val, sm_param, m_frame, mx_val, my_val)
-        elapsed += time.perf_counter() - t0
+        elapsed += (time.perf_counter() - t0)
 
         # vx, vy shape: [nx, ny, 1] -> transpose to [1, ny, nx] -> squeeze
         flows[i, 0] = np.transpose(vx, (2, 1, 0))[0]
         flows[i, 1] = np.transpose(vy, (2, 1, 0))[0]
 
-    return flows, elapsed
+    ms_per_frame = elapsed * 1000.0 / N
+    return flows, elapsed, ms_per_frame
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,7 +291,7 @@ def print_comparison_table(all_results, all_times=None):
     Parameters
     ----------
     all_results : dict  {method: metrics_dict}
-    all_times   : dict  {method: total_wall_seconds} or None
+    all_times   : dict  {method: (total_time_seconds, ms_per_frame)}  or None
         If provided, a 'ms/pair' row is appended at the bottom of the table.
     """
     methods = list(all_results.keys())
@@ -279,8 +330,7 @@ def print_comparison_table(all_results, all_times=None):
         row = f"  {'ms/pair':<12}"
         for m in methods:
             if m in all_times:
-                n_pairs = len(all_results[m]['EPE'])
-                ms_pair = all_times[m] * 1000.0 / max(n_pairs, 1)
+                ms_pair = all_times[m][1]   # pre-computed ms per frame
                 cell    = f"{ms_pair:.2f} ms"
             else:
                 cell = "N/A"
@@ -310,9 +360,9 @@ def plot_metric_bars(all_results, all_times=None, output_dir=None):
     ----------
     all_results : dict  {method: metrics_dict}
     output_dir  : str
-    all_times   : dict  {method: total_wall_seconds} or None
+    all_times   : dict  {method: (total_time_seconds, ms_per_frame)} or None
         When provided a fifth subplot showing evaluation speed (ms/pair) is
-        added.  Lower is better.
+        added. Lower is better.
     """
     methods = list(all_results.keys())
     colors  = _METHOD_COLORS[:len(methods)]
@@ -350,11 +400,10 @@ def plot_metric_bars(all_results, all_times=None, output_dir=None):
         ms_per_pair = []
         for m in methods:
             if m in all_times:
-                n_pairs = len(all_results[m]['EPE'])
-                ms_per_pair.append(all_times[m] * 1000.0 / max(n_pairs, 1))
+                ms_per_pair.append(all_times[m][1])   # pre-computed ms per frame
             else:
                 ms_per_pair.append(float('nan'))
-
+ 
         bars = ax.bar(x, ms_per_pair, 0.6, color=colors,
                       edgecolor='black', alpha=0.85)
         # Annotate each bar with its value so exact numbers are readable
@@ -548,16 +597,19 @@ if __name__ == '__main__':
 
     args   = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}\n")
+    print(f"\nDevice: {device}\n")
 
     os.makedirs(args.output, exist_ok=True)
 
     # ── Load test set ─────────────────────────────────────────────────────
     print(f"Loading test set from cache: {args.cache}")
-    (*_, test_A, test_B, test_flows, metadata) = load_dataset_cache(args.cache)
+    (train_A, train_B, train_flows,
+     val_A, val_B, val_flows,
+     test_A, test_B, test_flows, metadata) = load_dataset_cache(args.cache)
     print(f"  Test pairs : {len(test_A)}")
-    print(f"  Flow type  : {metadata['flow_type']}")
-    print(f"  Max shift  : {metadata['max_shift']} px\n")
+    if 'flow_type' in metadata.keys():
+        print(f"  Flow type  : {metadata['flow_type']}")
+        print(f"  Max shift  : {metadata['max_shift']} px")
 
     test_dataset = BESDataset(test_A, test_B, test_flows, augment=False)
     flows_gt     = test_flows   # (N, 2, H, W)
@@ -573,10 +625,12 @@ if __name__ == '__main__':
         else:
             print("\nPWCNet:")
             model_s = load_pwc(args.weights_pwc, device)
-            all_flows['PWC'], all_times['PWC'] = run_bes_model(
+            all_flows['PWC'], elapsed, ms_pf = run_bes_model(
                 model_s, test_dataset, device, args.batch_size
             )
+            all_times['PWC'] = (elapsed, ms_pf)
             del model_s
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     # 2. BESFlowNetS
     if not args.skip_flownets:
@@ -585,24 +639,32 @@ if __name__ == '__main__':
         else:
             print("\nBESFlowNetS:")
             model_f = load_flownets(args.weights_flownets, device)
-            all_flows['FlowNetS'], all_times['FlowNetS'] = run_bes_model(
+            all_flows['FlowNetS'], elapsed, ms_pf = run_bes_model(
                 model_f, test_dataset, device, args.batch_size
             )
+            all_times['FlowNetS'] = (elapsed, ms_pf)
             del model_f
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     # 3. ODP
     if not args.skip_odp:
-        all_flows['ODP'], all_times['ODP'] = run_odp(test_A, test_B)
+        all_flows['ODP'], elapsed, ms_pf = run_odp(test_A, test_B)
+        all_times['ODP'] = (elapsed, ms_pf)
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     # 4. Farneback
     if not args.skip_farneback:
-        all_flows['Farneback'], all_times['Farneback'] = run_farneback(test_A, test_B)
+        all_flows['Farneback'], elapsed, ms_pf = run_farneback(test_A, test_B)
+        all_times['Farneback'] = (elapsed, ms_pf)
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     # 5. RAFT-small
     if not args.skip_raft:
-        all_flows['RAFT-small'], all_times['RAFT-small'] = run_raft_small(
+        all_flows['RAFT-small'], elapsed, ms_pf = run_raft_small(
             test_A, test_B, device, args.batch_size
         )
+        all_times['RAFT-small'] = (elapsed, ms_pf)
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     if not all_flows:
         print("No methods were run — nothing to compare.")

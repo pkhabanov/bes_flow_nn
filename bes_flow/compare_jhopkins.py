@@ -290,8 +290,9 @@ def build_pairs(images, vx, vy, times, x_points, y_points, psf_fwhm=None):
 def plot_animation(images, times, vx, vy, 
                    x_points, y_points,
                    colormap='RdBu_r',
-                   interval=300,
-                   scale=5):
+                   interval=300, scale=5, 
+                   vmin=-0.03, vmax=0.03,
+                   save_ani=False):
     '''
     plot frames animation with velocity quiver overlay
     images, vx, vy have shape (Nframes, ny, nx)
@@ -302,10 +303,7 @@ def plot_animation(images, times, vx, vy,
 
     # Create dynamic elements of the animation
     ims = []
-    j = 2  # index step for velocity quiver
-    # set colormap limits
-    vmin = -0.05 
-    vmax = 0.05 
+    j = 4  # index step for velocity quiver
     x2d, z2d = np.meshgrid(x_points, y_points)
 
     for i in range(n_frames):
@@ -328,9 +326,10 @@ def plot_animation(images, times, vx, vy,
             horizontalalignment='center',
         )
         artists += [title]
-        qv = ax.quiver(x2d[::j, ::j], z2d[::j, ::j], 
-                    vx[i, ::j, ::j], vy[i, ::j, ::j], 
-                    scale=scale)
+        qv = ax.quiver(
+            x2d[::j, ::j], z2d[::j, ::j], 
+            vx[i, ::j, ::j], vy[i, ::j, ::j], 
+            scale=scale, color='lime')
         artists += [qv]
         ims.append(artists)
     cbar = fig.colorbar(im, ax=ax)
@@ -338,6 +337,9 @@ def plot_animation(images, times, vx, vy,
     cbar.ax.set_ylabel('density')
     ani = animation.ArtistAnimation(fig, ims, interval=interval, repeat_delay=2000)
     plt.show()
+    if save_ani:
+        writer = animation.PillowWriter(fps=15)
+        ani.save("images.gif", writer=writer)
 
 
 if __name__ == '__main__':
@@ -404,7 +406,7 @@ if __name__ == '__main__':
     # ── Build frame pairs and GT flow ─────────────────────────────────────
     n0 = 10  # skip first n0 frames
     framesA, framesB, flows_gt = build_pairs(images[n0:,:,:], vx[n0:,:,:], vy[n0:,:,:], times[n0:],
-                                             x_points, y_points, psf_fwhm=8)
+                                             x_points, y_points, psf_fwhm=None)
 
     test_dataset = BESDataset(framesA, framesB, flows_gt, augment=False)
 
@@ -419,10 +421,12 @@ if __name__ == '__main__':
         else:
             print("\nPWCNet:")
             model_pwc = load_pwc(args.weights_pwc, device)
-            all_flows['PWC'], all_times['PWC'] = run_bes_model(
+            all_flows['PWC'], elapsed, ms_pf = run_bes_model(
                 model_pwc, test_dataset, device, args.batch_size
             )
+            all_times['PWC'] = (elapsed, ms_pf)
             del model_pwc
+            print(f'  Elapsed time {elapsed:.3f} s')
 
     # 2. BESFlowNetS
     if not args.skip_flownets:
@@ -431,29 +435,37 @@ if __name__ == '__main__':
         else:
             print("\nBESFlowNetS:")
             model_f = load_flownets(args.weights_flownets, device)
-            all_flows['FlowNetS'], all_times['FlowNetS'] = run_bes_model(
+            all_flows['FlowNetS'], elapsed, ms_pf = run_bes_model(
                 model_f, test_dataset, device, args.batch_size
             )
+            all_times['FlowNetS'] = (elapsed, ms_pf)
             del model_f
+            print(f'  Elapsed time {elapsed:.3f} s')
 
     # 3. ODP
     if not args.skip_odp:
-        all_flows['ODP'], all_times['ODP'] = run_odp(framesA, framesB)
+        all_flows['ODP'], elapsed, ms_pf = run_odp(framesA, framesB)
+        all_times['ODP'] = (elapsed, ms_pf)
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     # 4. Farneback
     if not args.skip_farneback:
-        all_flows['Farneback'], all_times['Farneback'] = run_farneback(
+        all_flows['Farneback'], elapsed, ms_pf = run_farneback(
             framesA, framesB
         )
+        all_times['Farneback'] = (elapsed, ms_pf)
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     # 5. RAFT-small
     if not args.skip_raft:
-        all_flows['RAFT-small'], all_times['RAFT-small'] = run_raft_small(
+        all_flows['RAFT-small'], elapsed, ms_pf = run_raft_small(
             framesA, framesB, device, args.batch_size
         )
+        all_times['RAFT-small'] = (elapsed, ms_pf)
+        print(f'  Elapsed time {elapsed:.3f} s')
 
     if args.plot_ani:
-        plot_animation(images, times, vx, vy, x_points, y_points)
+        plot_animation(images, times, vx, vy, x_points, y_points, save_ani=True)
 
     if not all_flows:
         print("No methods were run — nothing to compare.")
