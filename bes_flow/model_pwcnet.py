@@ -6,12 +6,12 @@
 # Cost Volume", Sun et al., CVPR 2018.  arXiv:1709.02371
 # Official implementation: NVlabs/PWC-Net (PWCNet/model_dc.py)
 #
-# Adapted for 64×64 BES images with a compact 4-level feature pyramid:
+# Adapted for 64x64 BES images with a compact 4-level feature pyramid:
 #
-#   Raw frame    :  1 × 64 × 64
-#   Level 1 (L1) : 16 × 32 × 32
-#   Level 2 (L2) : 32 × 16 × 16
-#   Level 3 (L3) : 64 ×  8 ×  8   
+#   Raw frame    :  1 x 64 x 64
+#   Level 1 (L1) : 16 x 32 x 32
+#   Level 2 (L2) : 32 x 16 x 16
+#   Level 3 (L3) : 64 x  8 x  8   
 
 
 import torch
@@ -89,17 +89,17 @@ class FeaturePyramidExtractor(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # L1: 1×64×64 -> 16×32×32
+        # L1: 1x64x64 -> 16x32x32
         self.conv1a  = _conv_lrelu(1,  16, kernel_size=3, stride=2)
         self.conv1aa = _conv_lrelu(16, 16, kernel_size=3)
         self.conv1b  = _conv_lrelu(16, 16, kernel_size=3)
 
-        # L2: 16×32×32 -> 32×16×16
+        # L2: 16x32x32 -> 32x16x16
         self.conv2a  = _conv_lrelu(16, 32, kernel_size=3, stride=2)
         self.conv2aa = _conv_lrelu(32, 32, kernel_size=3)
         self.conv2b  = _conv_lrelu(32, 32, kernel_size=3)
 
-        # L3: 32×16×16 -> 64×8×8
+        # L3: 32x16x16 -> 64x8x8
         self.conv3a  = _conv_lrelu(32, 64, kernel_size=3, stride=2)
         self.conv3aa = _conv_lrelu(64, 64, kernel_size=3)
         self.conv3b  = _conv_lrelu(64, 64, kernel_size=3)
@@ -297,7 +297,7 @@ class PWCNet(nn.Module):
         )
 
         # Intermediate flow tensors stored for optional multi-scale loss.
-        # [flow3 @8×8, flow2 @16×16, flow1 @32×32, flow1_refined @32×32]
+        # [flow3 @8x8, flow2 @16x16, flow1 @32x32, flow1_refined @32x32]
         self.flow_pyramid: list = []
 
     # ── Static helpers ────────────────────────────────────────────────────────
@@ -334,12 +334,12 @@ class PWCNet(nn.Module):
         c1A, c2A, c3A = self.pyramid(frameA)
         c1B, c2B, c3B = self.pyramid(frameB)
 
-        # ── L3 ( 8× 8): coarsest, no warping ─────────────────────────────
+        # ── L3 ( 8x 8): coarsest, no warping ─────────────────────────────
         cost3              = self.cost_volume(c3A, c3B)        # (B, 81,  8,  8)
         inp3               = torch.cat([cost3, c3A], dim=1)    # (B,145,  8,  8)
         flow3, full_feat3  = self.estimator3(inp3)             # (B,2/257,8,  8)
 
-        # ── L2 (16×16) ────────────────────────────────────────────────────
+        # ── L2 (16x16) ────────────────────────────────────────────────────
         up_flow3           = self._upsample_flow(flow3)        # (B,  2, 16, 16)
         c2B_warped         = warp(c2B, up_flow3)
         cost2              = self.cost_volume(c2A, c2B_warped) # (B, 81, 16, 16)
@@ -347,7 +347,7 @@ class PWCNet(nn.Module):
                                [cost2, c2A, up_flow3], dim=1)
         flow2, full_feat2  = self.estimator2(inp2)             # (B,2/227,16,16)
 
-        # ── L1 (32×32): finest active level ──────────────────────────────
+        # ── L1 (32x32): finest active level ──────────────────────────────
         up_flow2           = self._upsample_flow(flow2)        # (B,  2, 32, 32)
         c1B_warped         = warp(c1B, up_flow2)
         cost1              = self.cost_volume(c1A, c1B_warped) # (B, 81, 32, 32)
@@ -355,13 +355,13 @@ class PWCNet(nn.Module):
                                [cost1, c1A, up_flow2], dim=1)
         flow1, full_feat1  = self.estimator1(inp1)             # (B,2/211,32,32)
 
-        # ── Context network: dilated refinement at 32×32 ─────────────────
+        # ── Context network: dilated refinement at 32x32 ─────────────────
         flow1_refined      = self.context_net(flow1, full_feat1)  # (B, 2, 32, 32)
 
         # Store pyramid for optional multi-scale supervision
         self.flow_pyramid  = [flow3, flow2, flow1, flow1_refined]
 
-        # ── Final upsample: 32×32 -> 64×64, values ×2 ─────────────────────
+        # ── Final upsample: 32x32 -> 64x64, values x2 ─────────────────────
         return self._upsample_flow(flow1_refined)              # (B, 2, 64, 64)
 
 

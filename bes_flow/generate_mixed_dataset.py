@@ -192,7 +192,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--output', type=str,
-        default=f"synthetic_data/dataset_mixed_maxshift_{cfg.max_shift}.h5",
+        default=f"synthetic_data/dataset_maxshift_{cfg.max_shift}_mixed.h5",
         help="Output HDF5 path for the mixed dataset cache"
     )
     parser.add_argument(
