@@ -186,3 +186,58 @@ class WarpingL2Loss(nn.Module):
             total = photo_loss + self.smooth_weight * smooth_loss + self.laplacian_weight * laplacian_loss
         
         return total, photo_loss, smooth_loss, laplacian_loss, sup_loss
+
+
+def iterative_warping_loss(frameA, frameB, flow_predictions, criterion, flow_gt, gamma = 0.8):
+    """
+    \gamma-weighted photometric loss over a sequence of flow predictions.
+ 
+    Mirrors the sequence_loss() approach in WAFT / RAFT:
+      - Later iterations receive higher weight (\gamma^0 = 1.0 for the last).
+      - Earlier iterations receive lower weight (\gamma^(T-1) for the first).
+      - This ensures the model learns to refine progressively rather than
+        treating every iteration identically.
+ 
+    Parameters
+    ----------
+    frameA, frameB   : (B, 1, H, W) — input frame pair
+    flow_predictions : list of T tensors, each (B, 2, H, W)
+                       in chronological order (earliest = index 0)
+    criterion        : WarpingL2Loss instance (unsupervised or supervised)
+    flow_gt          : (B, 2, H, W) or None — only needed if criterion.is_supervised
+    gamma            : exponential decay factor (default 0.8, as in RAFT / WAFT)
+ 
+    Returns
+    -------
+    total, photo, smooth, laplacian, sup : scalar tensors
+        Weighted sums of each loss component, matching the return signature of
+        WarpingL2Loss.forward() for a drop-in replacement in the training loop.
+    """
+    import torch
+ 
+    T = len(flow_predictions)
+ 
+    total_acc    = torch.zeros(1, device=frameA.device)
+    photo_acc    = torch.zeros(1, device=frameA.device)
+    smooth_acc   = torch.zeros(1, device=frameA.device)
+    lap_acc      = torch.zeros(1, device=frameA.device)
+    sup_acc      = torch.zeros(1, device=frameA.device)
+ 
+    for i, flow in enumerate(flow_predictions):
+        # Weight: earlier iterations get lower weight, last iteration gets 1.0
+        weight = gamma ** (T - 1 - i)
+ 
+        loss, photo, smooth, lap, sup = criterion(
+            frameA, frameB, flow, flow_gt=flow_gt
+        )
+ 
+        total_acc  = total_acc  + weight * loss
+        photo_acc  = photo_acc  + weight * photo
+        smooth_acc = smooth_acc + weight * smooth
+        lap_acc    = lap_acc    + weight * lap
+        sup_acc    = sup_acc    + weight * sup
+ 
+    # Return scalars (squeeze the dummy batch dim we used for in-place addition)
+    return (total_acc.squeeze(), photo_acc.squeeze(),
+            smooth_acc.squeeze(), lap_acc.squeeze(), sup_acc.squeeze())
+ 

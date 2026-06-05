@@ -18,10 +18,10 @@ import h5py
 from dataclasses import replace
 
 from bes_flow.config  import cfg
-from bes_flow.model   import SiameseDisplacementNet
 from bes_flow.model_s import BESFlowNetS
 from bes_flow.model_pwcnet import PWCNet
-from bes_flow.loss    import WarpingL2Loss
+from bes_flow.model_waft import WAFTNet
+from bes_flow.loss    import WarpingL2Loss, iterative_warping_loss
 from bes_flow.dataset import make_datasets, make_dataloaders, generate_dataset, BESDataset
 from bes_flow.metrics import (compute_all_metrics, print_summary,
                                plot_metric_distributions, plot_epe_vs_displacement,
@@ -353,14 +353,21 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
             else:
                 flow_gt = None
             
-            # Forward pass
+            # Forward pass and Loss
             optimizer.zero_grad()
-            flow_pred = model(frameA, frameB)
-            
-            # Loss
-            total, photo, smooth, lap, sup = loss_fn(
-                frameA, frameB, flow_pred, flow_gt=flow_gt
-            )
+            flow_output = model(frameA, frameB)
+            if isinstance(flow_output, list):  # iterative model (WAFT)
+                flow_pred = flow_output[-1]
+                total, photo, smooth, lap, sup = iterative_warping_loss(
+                    frameA, frameB, flow_output, loss_fn,
+                    flow_gt=flow_gt, gamma=0.8,
+                )
+            else:  # single-pass models
+                flow_pred = flow_output
+                total, photo, smooth, lap, sup = loss_fn(
+                    frameA, frameB, flow_pred, flow_gt=flow_gt
+                    )
+
             # Backward pass
             total.backward()
 
@@ -531,7 +538,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', type=str,
                         help='Load model checkpoint to start with')
     parser.add_argument('--model', type=str, default='pwcnet',
-                        help='Model type: pwcnet or flownet')
+                        help='Model type: pwcnet, flownet, or waft')
     parser.add_argument('--plot_results', action='store_true',
                         help='Plot training loss history')
     args = parser.parse_args()
@@ -571,6 +578,9 @@ if __name__ == '__main__':
     elif args.model == 'pwcnet':
         print('Initializing PWCNet')
         model = PWCNet(max_displacement=cfg.max_displacement)
+    elif args.model == 'waft':
+         print('Initializing WAFTNet')
+         model = WAFTNet(iter_dim=32, iters_c=3, iters_f=3)
     
     model = model.to(device)
 
@@ -613,7 +623,7 @@ if __name__ == '__main__':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=cfg.num_epochs*1.25
         )
-        print("Starting single-stage training...\n")
+        print("Starting model training...\n")
         loss_history = train(
             model, train_loader, val_loader,
             loss_fn, optimizer, scheduler,
@@ -661,14 +671,4 @@ if __name__ == '__main__':
         with open(history_path, 'r') as file:
             full_history = json.load(file)
         total = len(full_history['total'])
-        stages = [
-            {'name': 'Stage 1 — smooth flow', 'flow_type': 'smooth',
-            'epochs': total // 4, 'lr': cfg.learning_rate},
-            {'name': 'Stage 2 — sinusoidal modes',       'flow_type': 'modes',
-            'epochs': total // 4, 'lr': cfg.learning_rate / 2 },
-            {'name': 'Stage 3 — zonal Gauss well + turb','flow_type': 'well',
-            'epochs': total // 4, 'lr': cfg.learning_rate / 2 },
-            {'name': 'Stage 4 — zonal sin + turbulence', 'flow_type': 'zonal',
-            'epochs': total - 3 * (total // 4),'lr': cfg.learning_rate / 2},
-            ]
         plot_loss_history(full_history, cfg)

@@ -39,6 +39,7 @@ import torch.nn.functional as F
 from bes_flow.config  import cfg
 from bes_flow.model_pwcnet import PWCNet
 from bes_flow.model_s import BESFlowNetS
+from bes_flow.model_waft import WAFTNet
 from bes_flow.dataset import load_dataset_cache, BESDataset
 from bes_flow.metrics import compute_all_metrics
 from bes_flow.odp import odp_chunk
@@ -67,6 +68,16 @@ def load_flownets(weights_path, device):
     model.eval()
     n = sum(p.numel() for p in model.parameters())
     print(f"  Loaded BESFlowNetS ({n:,} params) {weights_path}")
+    return model
+
+
+def load_waftnet(weights_path, device):
+    """Load WAFTNet from a checkpoint."""
+    model = WAFTNet().to(device)
+    model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=True))
+    model.eval()
+    n = sum(p.numel() for p in model.parameters())
+    print(f"  Loaded WAFTNet ({n:,} params) {weights_path}")
     return model
 
 
@@ -445,7 +456,7 @@ def plot_comparison_examples(framesA, framesB, flows_gt, all_flows,
     n_pairs = len(framesA)
     rng     = np.random.default_rng(seed=0)
     indices = rng.choice(n_pairs, size=min(n_examples, n_pairs), replace=False)
-    indices = [5, 10, 50, 100]
+    indices = [10, 20, 30, 40]
 
     H, W   = framesA.shape[2], framesA.shape[3]
     qs     = 8
@@ -582,12 +593,17 @@ if __name__ == '__main__':
     parser.add_argument('--weights_flownets',
                         default=None,
                         help='Checkpoint for BESFlowNetS')
+    parser.add_argument('--weights_waft',
+                        default=None,
+                        help='Checkpoint for WAFTNet')
 
     # Skip flags
     parser.add_argument('--skip_pwc',  action='store_true',
                         help='Skip PWCNet')
     parser.add_argument('--skip_flownets', action='store_true',
                         help='Skip BESFlowNetS')
+    parser.add_argument('--skip_waft', action='store_true',
+                        help='Skip WAFTNet')
     parser.add_argument('--skip_odp',      action='store_true',
                         help='Skip ODP (placeholder not yet implemented)')
     parser.add_argument('--skip_farneback',action='store_true',
@@ -646,19 +662,33 @@ if __name__ == '__main__':
             del model_f
         print(f'  Elapsed time {elapsed:.3f} s')
 
-    # 3. ODP
+    # 3. WAFT
+    if not args.skip_waft:
+        if args.weights_waft is None:
+            print("\n  [WAFTNet] --weights_waft not provided — skipping")
+        else:
+            print("\nWAFTNet:")
+            model_f = load_waftnet(args.weights_waft, device)
+            all_flows['WAFTNet'], elapsed, ms_pf = run_bes_model(
+                model_f, test_dataset, device, args.batch_size
+            )
+            all_times['WAFTNet'] = (elapsed, ms_pf)
+            del model_f
+        print(f'  Elapsed time {elapsed:.3f} s')
+    
+    # 4. ODP
     if not args.skip_odp:
         all_flows['ODP'], elapsed, ms_pf = run_odp(test_A, test_B)
         all_times['ODP'] = (elapsed, ms_pf)
         print(f'  Elapsed time {elapsed:.3f} s')
 
-    # 4. Farneback
+    # 5. Farneback
     if not args.skip_farneback:
         all_flows['Farneback'], elapsed, ms_pf = run_farneback(test_A, test_B)
         all_times['Farneback'] = (elapsed, ms_pf)
         print(f'  Elapsed time {elapsed:.3f} s')
 
-    # 5. RAFT-small
+    # 6. RAFT-small
     if not args.skip_raft:
         all_flows['RAFT-small'], elapsed, ms_pf = run_raft_small(
             test_A, test_B, device, args.batch_size
