@@ -651,7 +651,7 @@ if __name__ == '__main__':
         best_ckpt = args.checkpoint
     else:
         # Load the best checkpoint (lowest val EPE during training)
-        best_ckpt = f'checkpoints/model_{cfg.flow_type}_best.pt'
+        best_ckpt = f'checkpoints-{args.model}/model_{cfg.flow_type}_best.pt'
     print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
     model = load_model(model, best_ckpt, device, cfg)
 

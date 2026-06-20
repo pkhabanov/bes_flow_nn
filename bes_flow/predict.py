@@ -1,436 +1,505 @@
 # bes_flow/predict.py
 #
-# Inference pipeline: apply a trained SiameseDisplacementNet to a new
-# BES dataset and produce velocity fields for every consecutive frame pair.
+# Run optical flow inference on an experimental BES HDF5 file using up to
+# five methods, save per-method results and optionally plot a Vr radial profile.
+#
+# Methods:
+#   1. PWCNet         (--weights_pwc)
+#   2. BESFlowNetS    (--weights_flownets)
+#   3. RAFT-small     (torchvision pretrained)
+#   4. Farneback      (OpenCV)
+#   5. ODP            (bes_flow.odp)
+#
+# Output files (one per method, alongside the input file):
+#   <stem>_pwc.h5, <stem>_flownet.h5, <stem>_raft.h5,
+#   <stem>_farneback.h5, <stem>_odp.h5
+#
+# Each output contains:
+#   vR, vZ            - velocity arrays (m/s), shape (n_frames, 8, 8)
+#   R, Z              - spatial coordinates (m) at 8x8 resolution
+#   time              - time axis (ms) for the n_frames velocity frames
+#   R_profile         - R coordinates for the radial profile (full 64-pt grid)
+#   vZ_profile        - vZ averaged over time and Z (64-pt radial profile)
 #
 # Usage
 # ─────
-# From the command line:
-#   python -m bes_flow.predict \
-#       --frames   data/raw/new_shot.npy \
-#       --weights  checkpoints/model_epoch_0100.pt \
-#       --output   outputs/velocities.npy
-#
-# Or from another script:
-#   from bes_flow.predict import load_model, predict_sequence
-#   model     = load_model('checkpoints/model_epoch_0100.pt', device)
-#   velocities = predict_sequence(model, bes_frames, device)
-#
-# Output
-# ──────
-# velocities : np.ndarray of shape (N-1, 2, 64, 64)
-#   - N-1 because each velocity field is computed from a pair of frames
-#   - channel 0 = dx (horizontal / poloidal velocity in pixels per frame)
-#   - channel 1 = dy (vertical   / radial    velocity in pixels per frame)
-#   Multiply by (pixel_size_cm / frame_interval_us) to convert to cm/μs
+#   python predict.py \
+#       --input  data/shot12345.h5 \
+#       --weights_pwc       checkpoints/pwc_best.pt \
+#       --weights_flownets  checkpoints/flownets_best.pt \
+#       [--skip_raft] [--skip_farneback] [--skip_odp] \
+#       [--skip_pwc] [--skip_flownets] \
+#       [--plot]
 
 import os
 import argparse
+import time
 import numpy as np
-import torch
-import torch.nn.functional as F
+import h5py
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from matplotlib.colors import CenteredNorm
-from bes_flow.config  import cfg
+import torch
+
+from bes_flow.compare_methods import (
+    load_pwc,
+    load_flownets,
+    run_farneback,
+    run_raft_small,
+    run_odp,
+)
 
 
-def load_model(model, weights_path, device, cfg=cfg):
+def load_bes_h5(path):
     """
-    Instantiate the network and load trained weights from a checkpoint file.
+    Load images and coordinate axes from a BES HDF5 file.
 
-    Parameters
-    ----------
-    model : your model
-    weights_path : str         — path to a .pt checkpoint saved by train.py
-    device       : torch.device
-    cfg          : Config      — must match the config used during training
-                                 (feature_channels, max_displacement)
+    Expected entries: 'images', 'time', 'R', 'Z'
+      images : (N, H, W)  or  (N, 1, H, W)
+      time   : (N,)  [ms]
+      R      : (W,)  radial positions  [cm]
+      Z      : (H,)  poloidal positions [cm]
 
     Returns
     -------
-    model : updated model
+    images : (N, H, W) float32
+    time   : (N,) float32
+    R      : (W,) float32
+    Z      : (H,) float32
     """
-    model.to(device)
+    with h5py.File(path, 'r') as f:
+        images = f['images'][()].astype(np.float32)
+        time   = f['time'][()].astype(np.float32)
+        R      = f['R'][()].astype(np.float32)
+        Z      = f['Z'][()].astype(np.float32)
 
-    # Load the saved weight dictionary.
-    # map_location ensures weights saved on GPU load correctly on CPU and vice versa.
-    state_dict = torch.load(weights_path, map_location=device, weights_only=True)
-    model.load_state_dict(state_dict)
+    if images.ndim == 4:          # (N, 1, H, W) -> (N, H, W)
+        images = images[:, 0]
 
-    # model.eval() is critical for inference:
-    #   - switches BatchNorm to use running statistics instead of batch statistics
-    #   - disables any dropout layers
-    # Without this, predictions will be inconsistent and slightly wrong.
+    print(f"  Loaded {images.shape[0]} frames  ({images.shape[1]}x{images.shape[2]} px)")
+    print(f"  R: {R[0]:.2f} - {R[-1]:.2f} cm ({len(R)} pts)")
+    print(f"  Z: {Z[0]:.2f} - {Z[-1]:.2f} cm ({len(Z)} pts)")
+    return images, time, R, Z
+
+
+def normalize_sequence(images):
+    """
+    Joint normalization across the whole sequence to [0, 1].
+    Returns float32 array with the same shape as input.
+    """
+    vmin = images.min()
+    vmax = images.max()
+    if vmax > vmin:
+        return (images - vmin) / (vmax - vmin)
+    return images
+
+
+def make_pairs(images, per_pair_norm=False):
+    """
+    Build consecutive frame pairs.
+ 
+    Parameters
+    ----------
+    images        : (N, H, W) float32
+    per_pair_norm : bool
+        If True, each pair (A, B) is normalised jointly to [0, 1] using the
+        min/max across both frames. 
+
+    Returns
+    -------
+    framesA : (N-1, 1, H, W)
+    framesB : (N-1, 1, H, W)
+    """
+    framesA = images[:-1, np.newaxis].copy()   # (N-1, 1, H, W)
+    framesB = images[1:,  np.newaxis].copy()
+ 
+    if per_pair_norm:
+        # Per-pair min/max across both frames
+        # Flatten spatial dims to (N, 2*H*W), then reduce along that axis.
+        flat   = np.concatenate([framesA, framesB], axis=1).reshape(len(framesA), -1)
+        vmin   = flat.min(axis=1)[:, None, None, None]   # (N, 1, 1, 1)
+        vmax   = flat.max(axis=1)[:, None, None, None]
+        scale  = np.where(vmax - vmin > 1e-6, vmax - vmin, 1.0)
+        framesA = (framesA - vmin) / scale
+        framesB = (framesB - vmin) / scale
+ 
+    return framesA, framesB
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Inference wrappers
+# ─────────────────────────────────────────────────────────────────────────────
+# Convention: all wrappers return (N, 2, H, W) float32
+#   channel 0 = dx (R direction, pixels/frame)
+#   channel 1 = dy (Z direction, pixels/frame)
+
+def run_bes_model(model, framesA, framesB, device, batch_size=16,
+                  per_frame_norm=True):
+    """
+    Generic runner for PWCNet and BESFlowNetS.
+ 
+    Parameters
+    ----------
+    per_frame_norm : bool
+        If True (default), each frame pair is normalised jointly to [0, 1]
+    """
+    N = len(framesA)
+    H, W = framesA.shape[2], framesA.shape[3]
+    flows = np.zeros((N, 2, H, W), dtype=np.float32)
+ 
     model.eval()
-
-    print(f"Loaded weights from {weights_path}")
-    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    return model
-
-
-def preprocess_frame(frame):
-    """
-    Normalize a single 2-D BES frame to [0, 1] and convert to a
-    (1, 1, H, W) PyTorch tensor ready for the network.
-
-    Parameters
-    ----------
-    frame : (H, W) float array — raw BES frame
-
-    Returns
-    -------
-    tensor : (1, 1, H, W) float32 tensor
-    """
-    frame = frame.astype(np.float32)
-    frame = (frame - frame.min()) / (frame.max() - frame.min() + 1e-8)
-    # unsqueeze twice: add batch dim (B=1) and channel dim (C=1)
-    return torch.tensor(frame).unsqueeze(0).unsqueeze(0)
-
-
-def preprocess_pair(frameA, frameB):
-    """
-    Normalize two consecutive BES frames jointly to [0, 1].
-    Joint normalization uses the combined min/max of both frames, so their
-    relative intensities are preserved
- 
-    Parameters
-    ----------
-    frameA, frameB : (H, W) float arrays — raw consecutive BES frames
- 
-    Returns
-    -------
-    tensorA, tensorB : (1, 1, H, W) float32 tensors, ready for the network
-    """
-    fA = frameA.astype(np.float32)
-    fB = frameB.astype(np.float32)
- 
-    joint_min = min(fA.min(), fB.min())
-    joint_max = max(fA.max(), fB.max())
-    scale     = joint_max - joint_min + 1e-8
- 
-    fA = (fA - joint_min) / scale
-    fB = (fB - joint_min) / scale
- 
-    tensorA = torch.tensor(fA).unsqueeze(0).unsqueeze(0)   # (1, 1, H, W)
-    tensorB = torch.tensor(fB).unsqueeze(0).unsqueeze(0)
- 
-    return tensorA, tensorB
-
-
-def predict_pair(model, frameA, frameB, device):
-    """
-    Predict the displacement field between a single pair of BES frames.
-
-    Parameters
-    ----------
-    model          : trained SiameseDisplacementNet in eval mode
-    frameA, frameB : (H, W) float arrays — consecutive raw BES frames
-
-    Returns
-    -------
-    flow : (2, H, W) float32 numpy array — predicted displacement in pixels
-           channel 0 = dx, channel 1 = dy
-    """
-    tensorA, tensorB = preprocess_pair(frameA, frameB)
-    tensorA = tensorA.to(device)
-    tensorB = tensorB.to(device)
- 
     with torch.no_grad():
-        flow_tensor = model(tensorA, tensorB)   # (1, 2, H, W)
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            bA  = torch.from_numpy(framesA[start:end]).to(device)
+            bB  = torch.from_numpy(framesB[start:end]).to(device)
  
-    return flow_tensor[0].cpu().numpy()         # (2, H, W)
+            if per_frame_norm:
+                # Normalise each pair jointly: min/max over both frames
+                pair     = torch.cat([bA, bB], dim=1)   # (B, 2, H, W)
+                vmin     = pair.flatten(1).min(dim=1).values[:, None, None, None]
+                vmax     = pair.flatten(1).max(dim=1).values[:, None, None, None]
+                scale    = (vmax - vmin).clamp(min=1e-6)
+                bA       = (bA - vmin) / scale
+                bB       = (bB - vmin) / scale
+ 
+            flows[start:end] = model(bA, bB).cpu().numpy()
+ 
+    return flows
 
 
-def predict_sequence(model, frames, device, batch_size=16):
+# ─────────────────────────────────────────────────────────────────────────────
+# HDF5 output
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_result(out_path, vR, vZ, R, Z, time_pairs, R_profile, vZ_profile):
     """
-    Predict velocity fields for every consecutive pair in a BES frame sequence.
+    Write velocimetry results to an HDF5 file.
 
-    Processes pairs in batches for efficiency — much faster than calling
-    predict_pair in a Python loop for large sequences.
+    Datasets
+    --------
+    vR, vZ      : (n_frames, n_Z, n_R)  [m/s]
+    R           : (n_R,)  [cm]
+    Z           : (n_Z,)  [cm]
+    time        : (n_frames,)  [ms]
+    R_profile   : (W,)   R grid for the profile [cm]
+    vZ_profile  : (W,)   vZ(R) time-and-Z averaged [m/s]
+    """
+    with h5py.File(out_path, 'w') as f:
+        f.create_dataset('vR',         data=vR,         compression='gzip')
+        f.create_dataset('vZ',         data=vZ,         compression='gzip')
+        f.create_dataset('R',          data=R)
+        f.create_dataset('Z',          data=Z)
+        f.create_dataset('time',       data=time_pairs)
+        f.create_dataset('R_profile',  data=R_profile)
+        f.create_dataset('vZ_profile', data=vZ_profile)
+    print(f"  Saved -> {out_path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plotting
+# ─────────────────────────────────────────────────────────────────────────────
+
+_METHOD_COLORS = {
+    'pwc':      'steelblue',
+    'flownet':  'darkorange',
+    'odp':     'forestgreen',
+    'farneback':'mediumpurple',
+    'raft':      'crimson',
+}
+
+def plot_v_profile(results, velocity_component='Z', output_path=None):
+    """
+    Single figure with two side-by-side panels:
+      left  — V radial profile (time and Z averaged)
+      right — Reynolds stress <Vr*Vz> radial profile (time and Z averaged)
+ 
+    Parameters
+    ----------
+    results              : list of dicts, each with keys
+                             'label', 'R_profile', 'vR_profile', 'vZ_profile',
+                             'ReynoldsStress_profile'
+    velocity_component   : 'R' to plot Vr (default), 'Z' to plot Vz
+    output_path          : str or None - save figure if given
+    """
+    if velocity_component == 'R':
+        v_key   = 'vR_profile'
+        v_label = r'$\langle V_R \rangle$  (m/s)'
+        v_title = r'$\langle V_R \rangle$ - time & Z averaged'
+    elif velocity_component == 'Z':
+        v_key   = 'vZ_profile'
+        v_label = r'$\langle V_Z \rangle$  (m/s)'
+        v_title = r'$\langle V_Z \rangle$ - time & Z averaged'
+    else:
+        raise ValueError(f"velocity_component must be 'R' or 'Z', got {velocity_component!r}")
+ 
+    fig, (ax_v, ax_rs, ax_fl) = plt.subplots(1, 3, figsize=(18, 4), sharex=True)
+ 
+    for res in results:
+        label = res['label']
+        R     = res['R_profile']
+        color = _METHOD_COLORS.get(res['method_key'], None)
+        ax_v.plot(R,  res[v_key],                    label=label, color=color, lw=2)
+        ax_rs.plot(R, res['ReynoldsStress_profile'],  label=label, color=color, lw=2)
+        ax_fl.plot(R, res['flux_profile'],  label=label, color=color, lw=2)
+ 
+    ax_v.set_xlabel('R  (cm)', fontsize=12)
+    ax_v.set_ylabel(v_label, fontsize=12)
+    ax_v.set_title(v_title, fontsize=13)
+    ax_v.legend(fontsize=11)
+    ax_v.grid(True, alpha=0.3)
+    ax_v.axhline(0, color='k', lw=0.8, ls='--')
+ 
+    ax_rs.set_xlabel('R  (cm)', fontsize=12)
+    ax_rs.set_ylabel(r'$\langle \tilde{V}_R \tilde{V}_Z \rangle  (m^2/s^2)$', fontsize=12)
+    ax_rs.set_title(r'Reynolds stress $\langle \tilde{V}_R \tilde{V}_Z \rangle$ - time & Z averaged', fontsize=13)
+    ax_rs.legend(fontsize=11)
+    ax_rs.grid(True, alpha=0.3)
+    ax_rs.axhline(0, color='k', lw=0.8, ls='--')
+
+    ax_fl.set_xlabel('R  (cm)', fontsize=12)
+    #ax_fl.set_ylabel(r'$\langle \tilde{V}_R \tilde{n} \rangle  (m^{-2}s^{-1})$', fontsize=12)
+    ax_fl.set_ylabel(r'$\langle \tilde{V}_R \tilde{n} \rangle  (a.u.)$', fontsize=12)
+    ax_fl.set_title(r'Particle flux $\langle \tilde{V}_R \tilde{n} \rangle$ - time & Z averaged', fontsize=13)
+    ax_fl.legend(fontsize=11)
+    ax_fl.grid(True, alpha=0.3)
+    ax_fl.axhline(0, color='k', lw=0.8, ls='--')
+ 
+    fig.tight_layout()
+ 
+    if output_path is not None:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"  Saved plot -> {output_path}")
+    plt.show()
+    plt.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Flow postrpocessing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def postprocess_flows(flows_px, frames, R_interp, Z_interp, time_pairs,
+                      orig_res, results_to_plot, stem, method_key, label):
+    """
+    Convert pixel/frame flows to physical units, downsample to orig_res,
+    compute profiles, and save results
 
     Parameters
     ----------
-    model      : trained SiameseDisplacementNet in eval mode
-    frames     : (N, H, W) float array — the full BES time series
-    device     : torch.device
-    batch_size : number of frame pairs processed per forward pass.
+    flows_px  : (N, 2, H, W) float32  [pixels/frame]
+                channel 0 = vR direction (x / R axis)
+                channel 1 = vZ direction (y / Z axis)
+    frames    : (N, H, W) float32, array of frameAs
+    R_interp  : (W,) R coordinates of interpolated images [cm]
+    Z_interp  : (H,) Z coordinates of interpolated images [cm]
+    time_pairs: (N,) time of frame A in each pair [ms]
+    orig_res  : (n_R, n_Z) output resolution, default (8, 8)
 
     Returns
     -------
-    velocities : (N-1, 2, H, W) float32 numpy array
-                 velocities[t] is the displacement from frames[t] to frames[t+1]
+    vR_down  : (N, n_Z, n_R) [m/s]
+    vZ_down  : (N, n_Z, n_R) [m/s]
+    R_down   : (n_R,) [cm]
+    Z_down   : (n_Z,) [cm]
+    vR_full  : (N, H, W) full-resolution vR in m/s  (for profiles)
+    vZ_full  : (N, H, W) full-resolution vZ in m/s  (for Reynolds stress profile)
     """
-    N, H, W = frames.shape
-    n_pairs  = N - 1
+    print(f"\nPost-processing {label}...")
+    vR_full = flows_px[:, 0].copy()   # (N, H, W)
+    vZ_full = flows_px[:, 1].copy()
 
-    # Pre-allocate the output array
-    velocities = np.zeros((n_pairs, 2, H, W), dtype=np.float32)
+    dR = (R_interp[1] - R_interp[0]) / 100.0   # cm -> m
+    dZ = (Z_interp[1] - Z_interp[0]) / 100.0
+    dt = (time_pairs[1] - time_pairs[0]) / 1000.0  # ms -> s
 
-    print(f"Predicting {n_pairs} frame pairs in batches of {batch_size}...")
+    # Convert pixels/frame -> m/s
+    vR_full *= dR / dt
+    vZ_full *= dZ / dt
 
-    with torch.no_grad():
-        for start in range(0, n_pairs, batch_size):
-            end = min(start + batch_size, n_pairs)
-            
-            batchA_np = frames[start  : end    ].astype(np.float32)  # (B, H, W)
-            batchB_np = frames[start+1: end + 1].astype(np.float32)  # (B, H, W)
- 
-            # Joint normalization per pair: compute min/max over each (A,B) pair
-            # independently using axis=(1,2) so shape is (B, 1, 1).
-            pair_min = np.minimum(
-                batchA_np.min(axis=(1, 2), keepdims=True),
-                batchB_np.min(axis=(1, 2), keepdims=True),
-            )
-            pair_max = np.maximum(
-                batchA_np.max(axis=(1, 2), keepdims=True),
-                batchB_np.max(axis=(1, 2), keepdims=True),
-            )
-            scale     = pair_max - pair_min + 1e-8
-            batchA_np = (batchA_np - pair_min) / scale
-            batchB_np = (batchB_np - pair_min) / scale
- 
-            # Add channel dim: (B, H, W) → (B, 1, H, W)
-            batchA = torch.tensor(batchA_np[:, None]).to(device)
-            batchB = torch.tensor(batchB_np[:, None]).to(device)
- 
-            flow_batch = model(batchA, batchB)   # (B, 2, H, W)
-            velocities[start:end] = flow_batch.cpu().numpy()
- 
-            print(f"  Processed pairs {start}–{end-1} / {n_pairs-1}")
+    # Downsample to orig_res
+    n_R, n_Z     = orig_res          # e.g. 8, 8
+    res_x, res_y = vR_full.shape[2], vR_full.shape[1]   # W, H of interpolated images
+    px = res_x // n_R
+    py = res_y // n_Z
 
-    print(f"Done. Output shape: {velocities.shape}")
-    return velocities
+    R_down = np.array([R_interp[i * px:(i + 1) * px].mean() for i in range(n_R)])
+    Z_down = np.array([Z_interp[j * py:(j + 1) * py].mean() for j in range(n_Z)])
 
+    vR_down = np.zeros((vR_full.shape[0], n_Z, n_R), dtype=np.float32)
+    vZ_down = np.zeros((vZ_full.shape[0], n_Z, n_R), dtype=np.float32)
 
-def to_physical_units(velocities, pixel_size_cm, frame_interval_us):
-    """
-    Convert displacement fields from pixels/frame to cm/μs.
+    for j in range(n_Z):
+        for i in range(n_R):
+            vR_sub = vR_full[:, j * py:(j + 1) * py, i * px:(i + 1) * px]
+            vZ_sub = vZ_full[:, j * py:(j + 1) * py, i * px:(i + 1) * px]
+            vR_down[:, j, i] = vR_sub.mean(axis=(1, 2))
+            vZ_down[:, j, i] = vZ_sub.mean(axis=(1, 2))
 
-    Parameters
-    ----------
-    velocities       : (N-1, 2, H, W) — predicted displacements in pixels
-    pixel_size_cm    : physical size of one BES pixel in cm
-                       (from the BES geometric calibration)
-    frame_interval_us: time between consecutive frames in microseconds
+    R_profile  = R_interp.copy()
+    vR_profile = vR_full.mean(axis=(0, 1))                # avg over time and Z
+    vZ_profile = vZ_full.mean(axis=(0, 1))                # avg over time and Z
+    # fluctuationg components of vR, vZ
+    dvR = vR_full - vR_full.mean(axis=0)
+    dvZ = vZ_full - vZ_full.mean(axis=0)
+    # Reynolds stress <vR*vZ>
+    RS_profile = (dvR * dvZ).mean(axis=(0, 1)) 
+    # dn
+    frames = frames[:-1]
+    frames = frames - frames.mean(axis=0)
+    # particle flux profile <vR*dn>
+    flux_profile = (dvR * frames).mean(axis=(0, 1))   
 
-    Returns
-    -------
-    velocities_physical : (N-1, 2, H, W) in cm/μs
-    """
-    return velocities * (pixel_size_cm / frame_interval_us)
+    # save to hdf5
+    out_path = os.path.join(args.output_dir, f"{stem}_{method_key}.h5")
+    save_result(out_path, vR_down, vZ_down, R_down, Z_down,
+                time_pairs, R_profile, vZ_profile)
 
+    results_to_plot.append({
+        'label':                  label,
+        'method_key':             method_key,
+        'R_profile':              R_profile,
+        'vR_profile':             vR_profile,
+        'vZ_profile':             vZ_profile,
+        'ReynoldsStress_profile': RS_profile,
+        'flux_profile':           flux_profile,
+    })
 
-def plot_prediction(frameA, frameB, flow, save_path=None, title=None):
-    """
-    Diagnostic plot for a single predicted frame pair:
-        - Frame A (input)
-        - Frame B (input)
-        - dx map (horizontal velocity)
-        - dy map (vertical velocity)
-        - velocity magnitude
-        - quiver overlay on frame A
+    return results_to_plot
 
-    Parameters
-    ----------
-    frameA, frameB : (H, W) float arrays
-    flow           : (2, H, W) float array — predicted displacement in pixels
-    save_path      : if provided, save figure to this path
-    title          : optional figure title string
-    """
-    dx  = flow[0, :, :]
-    dy  = flow[1, :, :]
-    mag = np.sqrt(dx**2 + dy**2)
-
-    fig = plt.figure(figsize=(18, 5))
-    fig.suptitle(title or 'BES flow prediction', fontsize=13, fontweight='bold')
-    gs  = gridspec.GridSpec(1, 6, figure=fig, wspace=0.35)
-
-    # ── Frame A ──────────────────────────────────────────────────────────────
-    ax0 = fig.add_subplot(gs[0])
-    ax0.imshow(frameA, cmap='inferno', origin='upper')
-    ax0.set_title('Frame A')
-    ax0.set_xlabel('x (px)')
-    ax0.set_ylabel('y (px)')
-
-    # ── Frame B ──────────────────────────────────────────────────────────────
-    ax1 = fig.add_subplot(gs[1])
-    ax1.imshow(frameB, cmap='inferno', origin='upper')
-    ax1.set_title('Frame B')
-    ax1.set_xlabel('x (px)')
-
-    # ── dx map ───────────────────────────────────────────────────────────────
-    # CenteredNorm ensures zero displacement is always the midpoint colour
-    ax2 = fig.add_subplot(gs[2])
-    im2 = ax2.imshow(dx, cmap='RdBu_r', origin='upper',
-                     norm=CenteredNorm())
-    ax2.set_title('dx  (pixels)')
-    ax2.set_xlabel('x (px)')
-    fig.colorbar(im2, ax=ax2, shrink=0.8)
-
-    # ── dy map ───────────────────────────────────────────────────────────────
-    ax3 = fig.add_subplot(gs[3])
-    im3 = ax3.imshow(dy, cmap='RdBu_r', origin='upper',
-                     norm=CenteredNorm())
-    ax3.set_title('dy  (pixels)')
-    ax3.set_xlabel('x (px)')
-    fig.colorbar(im3, ax=ax3, shrink=0.8)
-
-    # ── Magnitude ─────────────────────────────────────────────────────────────
-    ax4 = fig.add_subplot(gs[4])
-    im4 = ax4.imshow(mag, cmap='viridis', origin='upper', vmin=0)
-    ax4.set_title('|v|  (pixels)')
-    ax4.set_xlabel('x (px)')
-    fig.colorbar(im4, ax=ax4, shrink=0.8)
-
-    # ── Quiver overlay ────────────────────────────────────────────────────────
-    ax5 = fig.add_subplot(gs[5])
-    ax5.imshow(frameA, cmap='inferno', origin='upper')
-
-    step   = 8
-    H, W   = frameA.shape
-    ys     = np.arange(step // 2, H, step)
-    xs     = np.arange(step // 2, W, step)
-    xx, yy = np.meshgrid(xs, ys)
-    u      = dx[yy, xx]
-    v      = dy[yy, xx]
-
-    ax5.quiver(xx, yy, u, -v,        # -v for image coordinate convention
-               color='cyan',
-               scale=60,
-               scale_units='width',
-               width=0.004,
-               headwidth=4)
-    ax5.set_title('Quiver overlay')
-    ax5.set_xlabel('x (px)')
-
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved to {save_path}")
-    plt.show()
-
-
-def plot_velocity_timeseries(velocities, save_path=None):
-    """
-    Plot the spatially averaged dx, dy and magnitude as a function of
-    frame index — a quick way to check whether the predicted flow evolves
-    plausibly over the BES time series.
-
-    Parameters
-    ----------
-    velocities : (N-1, 2, H, W) — full predicted velocity sequence
-    """
-    # Spatial mean at each time step
-    mean_dx  = velocities[:, 0, :, :].mean(axis=(1, 2))
-    mean_dy  = velocities[:, 1, :, :].mean(axis=(1, 2))
-    mean_mag = np.sqrt(velocities[:, 0]**2 +
-                       velocities[:, 1]**2).mean(axis=(1, 2))
-
-    frames = np.arange(len(mean_dx))
-
-    fig, axes = plt.subplots(3, 1, figsize=(12, 7), sharex=True)
-    fig.suptitle('Spatially averaged velocity vs frame index',
-                 fontsize=12, fontweight='bold')
-
-    axes[0].plot(frames, mean_dx, color='steelblue')
-    axes[0].axhline(0, color='black', linewidth=0.8, linestyle='--')
-    axes[0].set_ylabel('Mean dx  (px)')
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].plot(frames, mean_dy, color='darkorange')
-    axes[1].axhline(0, color='black', linewidth=0.8, linestyle='--')
-    axes[1].set_ylabel('Mean dy  (px)')
-    axes[1].grid(True, alpha=0.3)
-
-    axes[2].plot(frames, mean_mag, color='forestgreen')
-    axes[2].set_ylabel('Mean |v|  (px)')
-    axes[2].set_xlabel('Frame index')
-    axes[2].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"Saved to {save_path}")
-    plt.show()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Save and load utilities
-# ─────────────────────────────────────────────────────────────────────────────
-
-def save_velocities(velocities, path):
-    """Save the full velocity array as a .npy file."""
-    np.save(path, velocities)
-    print(f"Velocities saved to {path}  shape: {velocities.shape}")
-
-
-def load_velocities(path):
-    """Load a previously saved velocity array."""
-    velocities = np.load(path)
-    print(f"Loaded velocities from {path}  shape: {velocities.shape}")
-    return velocities
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser(
-        description='Run trained BES flow model on a new frame sequence'
+        description='Optical flow inference on experimental BES data'
     )
-    parser.add_argument('--frames',   required=True,
-                        help='Path to .npy file of BES frames, shape (N, 64, 64)')
-    parser.add_argument('--weights',  required=True,
-                        help='Path to trained model checkpoint (.pt file)')
-    parser.add_argument('--output',   default='outputs/velocities.npy',
-                        help='Where to save the predicted velocity array')
-    parser.add_argument('--batch_size', type=int, default=16,
-                        help='Number of frame pairs per forward pass')
-    parser.add_argument('--pixel_size_cm',    type=float, default=None,
-                        help='BES pixel size in cm (for physical unit conversion)')
-    parser.add_argument('--frame_interval_us', type=float, default=None,
-                        help='Frame interval in microseconds')
-    args = parser.parse_args()
-
+ 
+    # Input
+    parser.add_argument('--input', required=True,
+                        help='HDF5 file with BES images (keys: images, time, R, Z)')
+    parser.add_argument('--output_dir', default=None,
+                        help='Directory for output files '
+                             '(default: same directory as input)')
+    parser.add_argument('--batch_size', type=int, default=16)
+ 
+    # Neural-net weights (optional — method is skipped when not provided and
+    # not explicitly forced via the corresponding skip flag)
+    parser.add_argument('--weights_pwc',      default=None,
+                        help='Checkpoint for PWCNet')
+    parser.add_argument('--weights_flownets', default=None,
+                        help='Checkpoint for BESFlowNetS')
+ 
+    # Skip flags
+    parser.add_argument('--skip_pwc',       action='store_true')
+    parser.add_argument('--skip_flownets',  action='store_true')
+    parser.add_argument('--skip_raft',      action='store_true')
+    parser.add_argument('--skip_farneback', action='store_true')
+    parser.add_argument('--skip_odp',       action='store_true')
+ 
+    # Output resolution (original BES grid)
+    parser.add_argument('--orig_res_x', type=int, default=8,
+                        help='Original BES resolution in R direction (default 8)')
+    parser.add_argument('--orig_res_y', type=int, default=8,
+                        help='Original BES resolution in Z direction (default 8)')
+ 
+    # Plot flag
+    parser.add_argument('--plot', action='store_true',
+                        help='Plot velocity radial profiles after inference')
+    parser.add_argument('--velocity_component', choices=['R', 'Z'], default='Z',
+                        help="Velocity component to plot: 'R' for vR, 'Z' for vZ")
+ 
+    args   = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}\n")
-
-    # ── Load frames ───────────────────────────────────────────────────────────
-    print(f"Loading frames from {args.frames}...")
-    bes_frames = np.load(args.frames)
-    print(f"Loaded {bes_frames.shape[0]} frames, shape {bes_frames.shape}\n")
-
-    # ── Load model ────────────────────────────────────────────────────────────
-    model = load_model(args.weights, device)
-
-    # ── Predict ───────────────────────────────────────────────────────────────
-    velocities = predict_sequence(model, bes_frames, device,
-                                  batch_size=args.batch_size)
-
-    # ── Convert to physical units (optional) ──────────────────────────────────
-    if args.pixel_size_cm and args.frame_interval_us:
-        velocities = to_physical_units(
-            velocities, args.pixel_size_cm, args.frame_interval_us
-        )
-        print(f"\nConverted to cm/μs  "
-              f"(pixel size: {args.pixel_size_cm} cm, "
-              f"frame interval: {args.frame_interval_us} μs)")
-
-    # ── Save ──────────────────────────────────────────────────────────────────
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    save_velocities(velocities, args.output)
-
-    # ── Visualise first pair ──────────────────────────────────────────────────
-    plot_prediction(
-        bes_frames[0], bes_frames[1], velocities[0],
-        save_path = args.output.replace('.npy', '_pair0.png'),
-        title     = f"Frame pair 0→1  |  weights: {os.path.basename(args.weights)}"
-    )
-
-    # ── Time series plot ──────────────────────────────────────────────────────
-    plot_velocity_timeseries(
-        velocities,
-        save_path = args.output.replace('.npy', '_timeseries.png')
-    )
+    print(f"\nDevice: {device}")
+ 
+    # ── Output directory ────────────────────────────────────────────────────
+    if args.output_dir is None:
+        args.output_dir = os.path.dirname(os.path.abspath(args.input))
+    os.makedirs(args.output_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(args.input))[0]
+ 
+    # ── Load & preprocess ───────────────────────────────────────────────────
+    print(f"\nLoading {args.input} ...")
+    images, time_ax, R, Z = load_bes_h5(args.input)
+    N = 10000
+    images, time_ax = images[:N, :, :], time_ax[:N]
+ 
+    # Neural nets: per-pair normalization
+    print(f"Building frame pairs for neural nets ")
+    framesA_norm, framesB_norm = make_pairs(images, per_pair_norm=True)
+ 
+    # Classical methods: sequence-normalised pairs — joint [0,1] scale
+    print("Normalizing sequence jointly (for classical methods)...")
+    images_norm = normalize_sequence(images)
+    framesA, framesB = make_pairs(images_norm)
+ 
+    n_pairs = len(framesA)
+    print(f"  {n_pairs} consecutive pairs")
+ 
+    # Time axis for the velocity frames (time of frame A in each pair)
+    time_pairs = time_ax[:n_pairs]
+    orig_res   = (args.orig_res_x, args.orig_res_y)
+ 
+    # ── Collect results for optional plotting ────────────────────────────────
+    results_to_plot = []
+ 
+    # ── 1. PWCNet ────────────────────────────────────────────────────────────
+    if not args.skip_pwc:
+        if args.weights_pwc is None:
+            print("\n[PWC] --weights_pwc not provided — skipping")
+        else:
+            print("\n--- PWCNet ---")
+            model = load_pwc(args.weights_pwc, device)
+            t0 = time.perf_counter()
+            flows = run_bes_model(model, framesA_norm, framesB_norm, device, args.batch_size)
+            elapsed = time.perf_counter() - t0
+            print(f"  Elapsed: {elapsed:.3f} s  ({elapsed * 1000 / n_pairs:.2f} ms/frame)")
+            del model
+            results_to_plot = postprocess_flows(flows, images, R, Z, time_pairs, orig_res, 
+                                                results_to_plot, stem, 'pwc', 'PWC')
+ 
+    # ── 2. BESFlowNetS ───────────────────────────────────────────────────────
+    if not args.skip_flownets:
+        if args.weights_flownets is None:
+            print("\n[FlowNetS] --weights_flownets not provided — skipping")
+        else:
+            print("\n--- BESFlowNetS ---")
+            model = load_flownets(args.weights_flownets, device)
+            t0 = time.perf_counter()
+            flows = run_bes_model(model, framesA_norm, framesB_norm, device, args.batch_size)
+            elapsed = time.perf_counter() - t0
+            print(f"  Elapsed: {elapsed:.3f} s  ({elapsed * 1000 / n_pairs:.2f} ms/frame)")
+            del model
+            results_to_plot = postprocess_flows(flows, images, R, Z, time_pairs, orig_res, 
+                                                results_to_plot, stem, 'flownet', 'FlowNetS')
+ 
+    # ── 3. ODP ───────────────────────────────────────────────────────────────
+    if not args.skip_odp:
+        print("\n--- ODP ---")
+        flows, elapsed, ms_per_frame = run_odp(framesA_norm, framesB_norm)
+        print(f"  Elapsed: {elapsed:.3f} s  ({ms_per_frame:.2f} ms/frame)")
+        results_to_plot = postprocess_flows(flows, images, R, Z, time_pairs, orig_res, 
+                                            results_to_plot, stem, 'odp', 'ODP')
+    
+    # ── 4. RAFT-small ────────────────────────────────────────────────────────
+    if not args.skip_raft:
+        print("\n--- RAFT-small ---")
+        flows, elapsed, ms_per_frame = run_raft_small(framesA_norm, framesB_norm, device, args.batch_size)
+        print(f"  Elapsed: {elapsed:.3f} s  ({ms_per_frame:.2f} ms/frame)")
+        results_to_plot = postprocess_flows(flows, images, R, Z, time_pairs, orig_res, 
+                                            results_to_plot, stem, 'raft', 'RAFT-small')
+ 
+    # ── 5. Farneback ─────────────────────────────────────────────────────────
+    if not args.skip_farneback:
+        print("\n--- Farneback ---")
+        flows, elapsed, ms_per_frame = run_farneback(framesA_norm, framesB_norm)
+        print(f"  Elapsed: {elapsed:.3f} s  ({ms_per_frame:.2f} ms/frame)")
+        results_to_plot = postprocess_flows(flows, images, R, Z, time_pairs, orig_res, 
+                                            results_to_plot, stem, 'farneback', 'Farneback')
+ 
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    if args.plot:
+        if results_to_plot:
+            plot_path = os.path.join(args.output_dir, f"{stem}_v{args.velocity_component.lower()}_profile.png")
+            plot_v_profile(results_to_plot, velocity_component=args.velocity_component,
+                           output_path=plot_path)
+        else:
+            print("\nNo results to plot — all methods were skipped.")
+ 
+    print("\nDone.")
