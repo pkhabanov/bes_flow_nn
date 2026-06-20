@@ -6,6 +6,20 @@
 #                  __getitem__(i) returns (frameA, frameB, flow_gt).
 #
 #   DataLoader   — wraps the Dataset and handles batching + shuffling.
+#
+# All synthetic flow generators below are built from a scalar stream
+# function psi(x, y):
+#
+#       v_x = d(psi)/dy ,    v_y = -d(psi)/dx
+#
+# Any such field is divergence-free:
+#
+#       div v = d(v_x)/dx + d(v_y)/dy = psi_xy - psi_yx = 0
+#
+# Coordinate convention (consistent with the rest of the package):
+# arrays are indexed [row, col] = [y, x], x to the right, y up,
+# row 0 at the bottom.  np.gradient(psi, axis=0) = d(psi)/dy and
+# np.gradient(psi, axis=1) = d(psi)/dx.
 
 
 import os
@@ -16,10 +30,44 @@ from torch.utils.data import Dataset, DataLoader
 from scipy.ndimage import gaussian_filter, map_coordinates
 
 
+def curl_from_stream(psi):
+    """
+    Velocity field of a scalar stream function via central differences.
+ 
+    v = curl(psi) = (d(psi)/dy, -d(psi)/dx)
+ 
+    Parameters
+    ----------
+    psi : (H, W) float array — stream function on the pixel grid
+ 
+    Returns
+    -------
+    flow : (2, H, W) float32 — channel 0 = dx, channel 1 = dy
+    """
+    dpsi_dy = np.gradient(psi, axis=0)
+    dpsi_dx = np.gradient(psi, axis=1)
+    return np.stack([dpsi_dy, -dpsi_dx], axis=0).astype(np.float32)
+ 
+ 
+def normalize_flow(flow, max_shift, low=0.7):
+    """
+    Rescale a flow field so its PEAK vector magnitude is drawn uniformly
+    from [low * max_shift, max_shift].
+ 
+    Normalising the 2D magnitude (not dx/dy independently) preserves the
+    direction distribution — and, because it is a global scalar multiple,
+    it also preserves zero divergence.
+    """
+    magnitude = np.sqrt(flow[0]**2 + flow[1]**2)
+    scale     = np.random.uniform(low * max_shift, max_shift) / (magnitude.max() + 1e-8)
+    return (flow * scale).astype(np.float32)
+
+
 def random_smooth_flow(H, W, max_shift=6.0, smoothing_sigma=8.0):
     """
-    Generate a smooth random displacement field by Gaussian-smoothing
-    independent random noise.
+    Generate a smooth random divergence-free displacement field from a
+    Gaussian-random-field stream function.
+    Pipeline: white noise -> Gaussian smoothing -> psi -> v = curl(psi)
 
     Parameters
     ----------
@@ -34,34 +82,30 @@ def random_smooth_flow(H, W, max_shift=6.0, smoothing_sigma=8.0):
     -------
     flow : (2, H, W) float32 array — channel 0 = dx, channel 1 = dy
     """
-    # Draw independent Gaussian noise for each component
-    dx_raw = np.random.randn(H, W).astype(np.float32)
-    dy_raw = np.random.randn(H, W).astype(np.float32)
-
-    # Smooth with a Gaussian kernel to impose spatial coherence.
-    # Without this step the field would vary at the pixel level,
-    # which is unphysical for plasma velocity.
-    dx_smooth = gaussian_filter(dx_raw, sigma=smoothing_sigma)
-    dy_smooth = gaussian_filter(dy_raw, sigma=smoothing_sigma)
-
-    # Normalise so the peak displacement equals max_shift.
-    # We normalise by the maximum magnitude of the 2D vector field
-    # (not dx and dy independently) to preserve the direction distribution.
-    magnitude = np.sqrt(dx_smooth**2 + dy_smooth**2)
-    peak_mag  = magnitude.max() + 1e-8
-    scale     = np.random.uniform(0.7*max_shift, max_shift) / peak_mag
-
-    return np.stack([dx_smooth * scale,
-                     dy_smooth * scale], axis=0)
+    # Random stream function: smoothed white noise (Gaussian random field)
+    psi_raw = np.random.randn(H, W).astype(np.float32)
+    psi     = gaussian_filter(psi_raw, sigma=smoothing_sigma)
+ 
+    # Divergence-free velocity from the stream function
+    flow = curl_from_stream(psi)
+ 
+    # Normalise the peak displacement to ~max_shift
+    return normalize_flow(flow, max_shift)
 
 
 def sinusoidal_modes(H, W, n_modes=8, max_shift=6.0):
     """
-    Generate a velocity field as a sum of sinusoidal modes.
-
-    This mimics the spectral structure of plasma drift-wave turbulence:
-    the flow is a superposition of waves with different wavenumbers,
-    amplitudes and phases.
+    Generate a divergence-free velocity field as a superposition of
+    sinusoidal stream-function modes.
+ 
+    Each mode is a plane wave of the stream function,
+ 
+        psi_m = A_m * sin(kx_m * x + ky_m * y + phi_m)
+ 
+    and the velocity is the analytic curl:
+ 
+        dx += A_m * ky_m * cos(kx_m*x + ky_m*y + phi_m)
+        dy -= A_m * kx_m * cos(kx_m*x + ky_m*y + phi_m)
 
     Parameters
     ----------
@@ -77,31 +121,27 @@ def sinusoidal_modes(H, W, n_modes=8, max_shift=6.0):
     y_coords = np.linspace(0, 2 * np.pi, H, dtype=np.float32)
     x_coords = np.linspace(0, 2 * np.pi, W, dtype=np.float32)
     xx, yy   = np.meshgrid(x_coords, y_coords)
-
+ 
     dx = np.zeros((H, W), dtype=np.float32)
     dy = np.zeros((H, W), dtype=np.float32)
-
+ 
     for _ in range(n_modes):
         # Random wavenumber: integers 1–4 give structures that span
         # 1/4 to the full image — representative of BES turbulence scales
         kx = 0.4 * np.random.randint(1, 5)
         ky = 0.4 * np.random.randint(1, 5)
-
-        # Random amplitude and phase for each mode and each component
-        amp_x = np.random.randn()
-        amp_y = np.random.randn()
-        phase_x = np.random.uniform(0, 2 * np.pi)
-        phase_y = np.random.uniform(0, 2 * np.pi)
-
-        dx += amp_x * np.sin(kx * xx + phase_x)
-        dy += amp_y * np.sin(ky * yy + phase_y)
-
-    # Normalise to max_shift
-    magnitude = np.sqrt(dx**2 + dy**2)
-    peak_mag  = magnitude.max() + 1e-8
-    scale     = np.random.uniform(0.7*max_shift, max_shift) / peak_mag
-
-    return np.stack([dx * scale, dy * scale], axis=0)
+ 
+        # Random amplitude and phase per mode (shared by dx and dy —
+        # both components derive from the same stream-function mode)
+        amp   = np.random.randn()
+        phase = np.random.uniform(0, 2 * np.pi)
+ 
+        cos_mode = np.cos(kx * xx + ky * yy + phase)
+        dx += amp * ky * cos_mode    #  d(psi)/dy
+        dy -= amp * kx * cos_mode    # -d(psi)/dx
+ 
+    # Normalise to max_shift (global scale preserves zero divergence)
+    return normalize_flow(np.stack([dx, dy], axis=0), max_shift)
 
 
 def zonal_plus_turbulence_flow(H, W,
@@ -136,7 +176,7 @@ def zonal_plus_turbulence_flow(H, W,
     flow_turb  : (2, H, W) — turbulent component only
     """
 
-    # Zonal flow
+    # Zonal flow (divergent-free by definition)
     if profile_type == 'sin':
         # Smooth sinusoidal variation of y-velocity across the x (radial) axis.
         # add small random phase shift
@@ -166,23 +206,24 @@ def zonal_plus_turbulence_flow(H, W,
         np.tile(zonal_dy[None, :], (H, 1))
     ], axis=0)
 
-    # Turbulent component 
-    turb_raw  = np.random.randn(2, H, W).astype(np.float32)
-    turb_smooth = np.stack([
-        gaussian_filter(turb_raw[0], sigma=turbulence_sigma),
-        gaussian_filter(turb_raw[1], sigma=turbulence_sigma)
-    ], axis=0)
-
+    # Turbulent component — divergence-free via a random stream function.
+    psi_turb = gaussian_filter(
+        np.random.randn(H, W).astype(np.float32), sigma=turbulence_sigma
+    )
+    turb = curl_from_stream(psi_turb)
+ 
     # Normalise turbulent component to turbulence_amplitude
-    mag   = np.sqrt((turb_smooth**2).sum(axis=0)).max() + 1e-8
-    flow_turb = turb_smooth * (turbulence_amplitude / mag)
-
+    mag   = np.sqrt((turb**2).sum(axis=0)).max() + 1e-8
+    flow_turb = turb * (turbulence_amplitude / mag)
+ 
     # Total flow
     flow = flow_zonal + flow_turb
 
     return flow.astype(np.float32), flow_zonal.astype(np.float32), flow_turb.astype(np.float32)
 
-  
+
+# Image warping
+#   
 def warp_image(image, flow):
     """
     Warp a 2D image by a displacement field using cubic interpolation.
@@ -221,6 +262,107 @@ def warp_image(image, flow):
     return warped.astype(np.float32)
 
 
+def _sample_velocity(velocity, y, x):
+    """
+    Bilinearly interpolate a (2, H, W) velocity field at fractional
+    coordinates (y, x).  Edge values are extended outside the domain.
+ 
+    Returns
+    -------
+    vx, vy : arrays of the same shape as y / x
+    """
+    coords = [y.ravel(), x.ravel()]
+    vx = map_coordinates(velocity[0], coords, order=1,
+                         mode='nearest').reshape(y.shape)
+    vy = map_coordinates(velocity[1], coords, order=1,
+                         mode='nearest').reshape(y.shape)
+    return vx, vy
+ 
+ 
+def advect_image(image, velocity, n_steps=4):
+    """
+    Warp a 2D image by integrating a steady velocity field over unit time
+    with a backward semi-Lagrangian scheme (RK2 midpoint per sub-step).
+ 
+    Parameters
+    ----------
+    image    : (H, W) float32 array — the BES frame to warp
+    velocity : (2, H, W) float32 array — steady velocity field in
+               pixels per unit time (channel 0 = vx, channel 1 = vy)
+    n_steps  : number of RK2 sub-steps along each characteristic
+ 
+    Returns
+    -------
+    warped : (H, W) float32 array
+    """
+    H, W = image.shape
+    dt   = 1.0 / n_steps
+ 
+    y, x = np.meshgrid(
+        np.arange(H, dtype=np.float32),
+        np.arange(W, dtype=np.float32),
+        indexing='ij'
+    )
+ 
+    # Trace each output pixel backward to its source point in frame A
+    for _ in range(n_steps):
+        # Midpoint (RK2): evaluate v at the half-step position
+        vx1, vy1 = _sample_velocity(velocity, y, x)
+        x_mid    = x - 0.5 * dt * vx1
+        y_mid    = y - 0.5 * dt * vy1
+        vxm, vym = _sample_velocity(velocity, y_mid, x_mid)
+        x        = x - dt * vxm
+        y        = y - dt * vym
+ 
+    # Single cubic interpolation of the image at the final foot points
+    warped = map_coordinates(
+        image, [y.ravel(), x.ravel()], order=3, mode='nearest',
+    ).reshape(H, W)
+ 
+    return warped.astype(np.float32)
+ 
+ 
+def integrate_forward_displacement(velocity, n_steps=4):
+    """
+    Integrate the steady velocity field FORWARD from every grid point to
+    obtain the total displacement over unit time — the ground-truth flow
+    matching advect_image() in the loss convention
+    frameA(x) ≈ frameB(x + D(x)).
+ 
+    Parameters
+    ----------
+    velocity : (2, H, W) float32 — steady velocity field (px / unit time)
+    n_steps  : number of RK2 sub-steps (use the same value as in
+               advect_image so frame pair and ground truth stay consistent)
+ 
+    Returns
+    -------
+    flow : (2, H, W) float32 — total displacement (dx, dy) in pixels.
+           Peak magnitude can differ slightly (typically < 10%) from the
+           peak of `velocity` because curved characteristics integrate
+           a spatially varying field.
+    """
+    _, H, W = velocity.shape
+    dt      = 1.0 / n_steps
+ 
+    y0, x0 = np.meshgrid(
+        np.arange(H, dtype=np.float32),
+        np.arange(W, dtype=np.float32),
+        indexing='ij'
+    )
+    x, y = x0.copy(), y0.copy()
+ 
+    for _ in range(n_steps):
+        vx1, vy1 = _sample_velocity(velocity, y, x)
+        x_mid    = x + 0.5 * dt * vx1
+        y_mid    = y + 0.5 * dt * vy1
+        vxm, vym = _sample_velocity(velocity, y_mid, x_mid)
+        x        = x + dt * vxm
+        y        = y + dt * vym
+ 
+    return np.stack([x - x0, y - y0], axis=0).astype(np.float32)
+
+
 def _generate_flow(H, W, flow_type, max_shift):
     """
     Dispatch to the selected flow generator.
@@ -253,7 +395,7 @@ def _generate_flow(H, W, flow_type, max_shift):
     
 
 def generate_dataset(frames, n_pairs_per_frame, max_shift,
-                        noise_std, flow_type):
+                    noise_std, flow_type, n_warp_steps):
     """
     Generate the full synthetic dataset once and return numpy arrays.
 
@@ -268,6 +410,13 @@ def generate_dataset(frames, n_pairs_per_frame, max_shift,
     max_shift  : float — peak displacement in pixels
     noise_std         : float — std of additive Gaussian noise
     flow_type         : str   — 'smooth', 'modes', 'zonal', or 'flow'
+    n_warp_steps      : int   — number of semi-Lagrangian RK2 steps
+                        used to advect frame A into frame B.
+                        1  : single-step warp 
+                        >1 : the generated field is treated as a steady
+                             velocity field; frame B is produced by
+                             multi-step advection and flow_gt is the
+                             consistently integrated forward displacement.
 
     Returns
     -------
@@ -284,7 +433,7 @@ def generate_dataset(frames, n_pairs_per_frame, max_shift,
 
     print(f"  Generating {n_total} pairs "
           f"({N} frames x {n_pairs_per_frame} pairs, "
-          f"flow='{flow_type}')...")
+          f"flow='{flow_type}', warp_steps={n_warp_steps})...")
 
     idx = 0
     for i, frame in enumerate(frames):
@@ -293,8 +442,15 @@ def generate_dataset(frames, n_pairs_per_frame, max_shift,
         image = (image - image.min()) / (image.max() - image.min() + 1e-8)
 
         for _ in range(n_pairs_per_frame):
-            flow   = _generate_flow(H, W, flow_type, max_shift)
-            warped = warp_image(image, flow)
+            velocity = _generate_flow(H, W, flow_type, max_shift)
+            if n_warp_steps <= 1:
+                # Legacy single-step warp
+                flow   = velocity
+                warped = warp_image(image, velocity)
+            else:
+                # Multi-step semi-Lagrangian advection with consistent GT
+                flow   = integrate_forward_displacement(velocity, n_warp_steps)
+                warped = advect_image(image, velocity, n_warp_steps)
 
             if noise_std > 0:
                 framesA[idx, 0] = (image  + np.random.normal(0, noise_std, (H, W))
@@ -331,6 +487,7 @@ def _make_metadata(cfg):
         'test_split'       : float(cfg.test_split),
         'val_seed'         : int(cfg.val_seed),
         'test_seed'        : int(cfg.test_seed),
+        'n_warp_steps'     : int(cfg.n_warp_steps),
     }
 
 
@@ -692,6 +849,7 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
         max_shift         = cfg.max_shift,
         noise_std         = cfg.noise_std,
         flow_type         = cfg.flow_type,
+        n_warp_steps      = cfg.n_warp_steps,
     )
 
     # Validation set - fixed val_seed 
@@ -705,6 +863,7 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
         max_shift         = cfg.max_shift,
         noise_std         = cfg.noise_std,
         flow_type         = cfg.flow_type,
+        n_warp_steps      = cfg.n_warp_steps,
     )
 
     np.random.set_state(rng_state)  # restore random state
@@ -726,6 +885,7 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
             max_shift         = cfg.max_shift,
             noise_std         = cfg.noise_std,
             flow_type         = cfg.flow_type,
+            n_warp_steps      = cfg.n_warp_steps,
         )
         np.random.set_state(rng_state)
 
@@ -752,6 +912,7 @@ if __name__ == "__main__":
         n_pairs_per_frame  : int   = 1
         val_seed           : int   = 0
         test_seed          : int   = 42
+        n_warp_steps       : int   = 4
         # Set to None to skip saving
         dataset_cache_path : str   = 'synthetic_data/test_dataset.h5'
 

@@ -27,7 +27,7 @@ class Config:
 
     # Maximum pixel displacement applied when generating synthetic frame pairs.
     # Drawn uniformly from [-max_shift, +max_shift] pixels in both x and y.
-    max_shift: float = 12.0
+    max_shift: float = 12.0 #8.0
 
     # Standard deviation of Gaussian noise added to each synthetic frame.
     # Simulates the electronic noise present in real BES detector signals.
@@ -37,7 +37,16 @@ class Config:
     # Number of synthetic pairs generated per real BES frame.
     # Total training pairs = len(train_frames) * n_pairs_per_frame.
     # Increase to enlarge the dataset without needing more real frames.
-    n_pairs_per_frame: int = 4
+    n_pairs_per_frame: int = 1
+
+    # Number of semi-Lagrangian RK2 steps used to advect frame A into
+    # frame B during synthetic pair generation (see dataset.advect_image).
+    #   1  : legacy single-step warp 
+    #   >1 : the generated field is treated as a steady velocity field;
+    #        frame B is produced by multi-step advection and the ground
+    #        truth is the consistently integrated forward displacement.
+    # 4 sub-steps keep the per-step displacement <= ~2 px for max_shift=8.
+    n_warp_steps: int = 4
 
     # --- Model --------------------------------------------------------------
     # Number of channels in the shared CNN encoder output feature maps.

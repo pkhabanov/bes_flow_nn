@@ -75,6 +75,7 @@ def _generate_test_set_for_flow_type(frames, flow_type, cfg, n_pairs=50, seed=42
         max_shift         = cfg.max_shift,
         noise_std         = cfg.noise_std,
         flow_type         = flow_type,
+        n_warp_steps      = cfg.n_warp_steps,
     )
     np.random.set_state(rng_state)
     return fA, fB, gt
