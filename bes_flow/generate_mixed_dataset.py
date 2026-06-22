@@ -14,8 +14,10 @@
 import argparse
 import h5py
 import numpy as np
+from dataclasses import replace
 from bes_flow.dataset import generate_dataset, save_dataset_cache
 from bes_flow.config import cfg
+from bes_flow.train import resolve_cache_path
 
 
 # The four flow types that make up the mixed dataset
@@ -189,6 +191,13 @@ def generate_mixed_dataset(data_path, output_path,
 
  
 if __name__ == "__main__":
+    # set up config
+    cfg = replace(
+        cfg,
+        n_pairs_per_frame = 1,
+        flow_type = 'mixed',
+        )
+    
     parser = argparse.ArgumentParser(
         description="Generate a mixed-flow-type BES optical flow dataset."
     )
@@ -199,7 +208,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--output', type=str,
-        default=f"synthetic_data/dataset_maxshift_{cfg.max_shift}_mixed.h5",
+        default=resolve_cache_path(cfg.dataset_cache_path, cfg.flow_type),
         help="Output HDF5 path for the mixed dataset cache"
     )
     parser.add_argument(

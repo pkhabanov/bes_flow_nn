@@ -26,7 +26,30 @@ from bes_flow.dataset import make_datasets, make_dataloaders, generate_dataset, 
 from bes_flow.metrics import (compute_all_metrics, print_summary,
                                plot_metric_distributions, plot_epe_vs_displacement,
                                plot_spatial_error_map, plot_qualitative_examples)
-from bes_flow.predict import load_model
+
+
+def load_model(model, weights_path, device, cfg=cfg):
+    """
+    Instantiate the network and load trained weights from a checkpoint file.
+
+    Parameters
+    ----------
+    model : your model
+    weights_path : str         — path to a .pt checkpoint saved by train.py
+    device       : torch.device
+    cfg          : Config      — must match the config used during training
+                                 (feature_channels, max_displacement)
+
+    Returns
+    -------
+    model : updated model
+    """
+    # Load the saved weight dictionary.
+    state_dict = torch.load(weights_path, map_location=device, weights_only=True)
+    model.load_state_dict(state_dict)
+    print(f"Loaded weights from {weights_path}")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    return model
 
 
 def predict_dataset(model, dataset, device, batch_size=16):
@@ -580,8 +603,8 @@ if __name__ == '__main__':
         print('Initializing PWCNet')
         model = PWCNet(max_displacement=cfg.max_displacement)
     elif args.model == 'waft':
-         print('Initializing WAFTNet')
-         model = WAFTNet(iter_dim=32, iters_c=3, iters_f=3)
+        print('Initializing WAFTNet')
+        model = WAFTNet(iter_dim=32, iters_c=3, iters_f=3)
     
     model = model.to(device)
 
@@ -622,7 +645,7 @@ if __name__ == '__main__':
         )
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=cfg.num_epochs*1.25
+            optimizer, T_max=cfg.num_epochs
         )
         print("Starting model training...\n")
         loss_history = train(
