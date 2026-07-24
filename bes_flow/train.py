@@ -208,7 +208,8 @@ def plot_cross_flow_comparison(model, test_frames, device, cfg, output_dir):
         # col 0 — Frame A
         ax0 = fig.add_subplot(gs[row, 0])
         ax0.imshow(fA, cmap='inferno', origin='lower', vmin=vmin, vmax=vmax)
-        ax0.set_ylabel(f'{ft}\nEPE={epe_val:.3f} px', fontsize=12)
+        #ax0.set_ylabel(f'{ft}\nEPE={epe_val:.3f} px', fontsize=12)
+        ax0.set_ylabel(f'{ft}', fontsize=12)
         if row == 0:  ax0.set_title(col_titles[0])
         ax0.set_xticks([]);  ax0.set_yticks([])
  
@@ -346,7 +347,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
     history = {
         'total': [], 'photometric': [], 
         'smoothness': [], 'laplacian': [],
-        'supervised': [],
+        'supervised': [], 'divergence': [],
         'val_total': [], 'val_epe': [],
     }
     history_path = cfg.output_dir + f'train_history_{cfg.flow_type}.json'
@@ -366,7 +367,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
         model.train()
         epoch_totals = {'total': 0., 'photometric': 0.,
                         'smoothness': 0., 'laplacian': 0., 
-                        'supervised': 0.}
+                        'divergence': 0., 'supervised': 0.}
 
         for step, batch in enumerate(train_loader, start=1):
             frameA  = batch[0].to(device)
@@ -382,13 +383,13 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
             flow_output = model(frameA, frameB)
             if isinstance(flow_output, list):  # iterative model (WAFT)
                 flow_pred = flow_output[-1]
-                total, photo, smooth, lap, sup = iterative_warping_loss(
+                total, photo, smooth, lap, sup, div = iterative_warping_loss(
                     frameA, frameB, flow_output, loss_fn,
                     flow_gt=flow_gt, gamma=0.8,
                 )
             else:  # single-pass models
                 flow_pred = flow_output
-                total, photo, smooth, lap, sup = loss_fn(
+                total, photo, smooth, lap, sup, div = loss_fn(
                     frameA, frameB, flow_pred, flow_gt=flow_gt
                     )
 
@@ -404,6 +405,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
             epoch_totals['photometric'] += photo.item()
             epoch_totals['smoothness']  += smooth.item()
             epoch_totals['laplacian']   += lap.item()
+            epoch_totals['divergence']  += div.item()
             epoch_totals['supervised']  += sup.item()
 
             if step % max(1, n_batches // 5) == 0:
@@ -414,6 +416,7 @@ def train(model, train_loader, val_loader, loss_fn, optimizer, scheduler,
                     f"Photo: {photo.item():.5f}  "
                     f"Smooth: {smooth.item():.5f}  "
                     f"Lapl: {lap.item():.5f}  "
+                    f"Div: {div.item():.5f}"
                     f"Sup: {sup.item():.5f}"
                 )
 
@@ -496,12 +499,12 @@ def plot_loss_history(history, cfg):
     """
     Two-row grid of train/val loss curves with running-mean overlay.
 
-    Row 1: total | photometric | smoothness | supervised
+    Row 1: total | photometric | smoothness | laplacian | divergence | supervised
     Row 2: laplacian | val total | val EPE
     """
     epochs = np.arange(1, len(history['total']) + 1)
 
-    fig, axes = plt.subplots(2, 3, figsize=(20, 8))
+    fig, axes = plt.subplots(2, 4, figsize=(24, 8))
     fig.suptitle(
         f"Training history  |  flow: {cfg.flow_type}  |  "
         f"epochs: {len(epochs)}  |  lr: {cfg.learning_rate}",
@@ -512,8 +515,9 @@ def plot_loss_history(history, cfg):
         ('total',       'Total loss (train)',   'steelblue',     axes[0, 0], 'Loss'),
         ('photometric', 'Photometric loss',     'darkorange',    axes[0, 1], 'Loss'),
         ('smoothness',  'Smoothness loss',      'forestgreen',   axes[0, 2], 'Loss'),
-        #('supervised',  'Supervised loss',      'mediumpurple',  axes[0, 3], 'Loss'),
-        ('laplacian',   'Laplacian loss',       'darkturquoise', axes[1, 0], 'Loss'),
+        ('laplacian',   'Laplacian loss',       'darkturquoise', axes[0, 3], 'Loss'),
+        ('divergence',  'Divergence loss',      'mediumpurple',  axes[1, 0], 'Loss'),
+        #('supervised',  'Supervised loss',      'mediumpurple',  axes[1, 0], 'Loss'),
         ('val_total',   'Total loss (val)',     'crimson',       axes[1, 1], 'Loss'),
         ('val_epe',     'Val EPE  (px)',        'teal',          axes[1, 2], 'EPE (px)'),
     ]
@@ -625,6 +629,7 @@ if __name__ == '__main__':
         smooth_weight = cfg.smooth_weight,
         laplacian_weight = cfg.laplacian_weight,
         sup_weight    = cfg.sup_weight,
+        div_weight    = cfg.div_weight,
         is_supervised = cfg.is_supervised,
     )
     
@@ -675,7 +680,7 @@ if __name__ == '__main__':
         best_ckpt = args.checkpoint
     else:
         # Load the best checkpoint (lowest val EPE during training)
-        best_ckpt = f'checkpoints-{args.model}/model_{cfg.flow_type}_best.pt'
+        best_ckpt = f'checkpoints-{args.model}-zerodiv/model_{cfg.flow_type}_best.pt'
     print(f"\nLoading best checkpoint for evaluation: {best_ckpt}")
     model = load_model(model, best_ckpt, device, cfg)
 

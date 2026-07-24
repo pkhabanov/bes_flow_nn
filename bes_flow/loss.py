@@ -34,11 +34,12 @@ class WarpingL2Loss(nn.Module):
                     if True - supervised training: EPE on flow + smoothness
     """
     def __init__(self, smooth_weight=0.01, laplacian_weight=0.05,
-                 sup_weight=0.1, is_supervised=False):
+                 sup_weight=0.1, div_weight=0.0, is_supervised=False):
         super().__init__()
         self.smooth_weight = smooth_weight
         self.sup_weight = sup_weight
         self.laplacian_weight = laplacian_weight
+        self.div_weight = div_weight
         self.is_supervised = is_supervised
 
     def warp(self, frame, flow):
@@ -90,7 +91,6 @@ class WarpingL2Loss(nn.Module):
         return F.grid_sample(frame, displaced_grid,
                              align_corners=True, padding_mode='border')
 
-
     def charbonnier(self, x, eps=1e-3):
         '''
         The Charbonnier photometric loss sqrt(x² + ε²) with ε ≈ 0.001 
@@ -137,6 +137,40 @@ class WarpingL2Loss(nn.Module):
         
         return tv, laplacian
 
+    def divergence_loss(self, flow):
+        """
+        Physics-informed penalty enforcing a divergence-free predicted flow
+        field, i.e. div(flow) = du/dx + dv/dy ~= 0 everywhere.
+ 
+        Central differences are used for both partials so that du/dx and
+        dv/dy are estimated at the same set of interior grid points; the
+        two partials are each cropped along the perpendicular axis so
+        their shapes match before being summed.
+ 
+        Parameters
+        ----------
+        flow : (B, 2, H, W) — predicted displacement field, channel 0 = dx (u),
+               channel 1 = dy (v)
+ 
+        Returns
+        -------
+        scalar — mean squared divergence over interior pixels (all batches)
+        """
+        u = flow[:, 0:1, :, :]   # (B, 1, H, W)
+        v = flow[:, 1:2, :, :]   # (B, 1, H, W)
+ 
+        # du/dx via central differences, cropped in y (dim 2) to align
+        # with dv/dy's interior region.
+        du_dx = (u[:, :, 1:-1, 2:] - u[:, :, 1:-1, :-2]) / 2.0
+ 
+        # dv/dy via central differences, cropped in x (dim 3) to align
+        # with du/dx's interior region.
+        dv_dy = (v[:, :, 2:, 1:-1] - v[:, :, :-2, 1:-1]) / 2.0
+ 
+        div = du_dx + dv_dy   # (B, 1, H-2, W-2)
+ 
+        # Squared penalty
+        return div.pow(2).mean()
 
     def forward(self, frameA, frameB, flow, flow_gt=None):
         """
@@ -155,7 +189,11 @@ class WarpingL2Loss(nn.Module):
         total        : scalar — total weighted loss (used for backprop)
         photo_loss   : scalar — photometric term alone (logged separately)
         smooth_loss  : scalar — smoothness term alone (logged separately)
+        div_loss     : scalar — divergence-free penalty (logged separately)
         """
+        # Divergence-free penalty is computed on the raw prediction in both modes
+        div_loss = self.divergence_loss(flow)
+
         if self.is_supervised:
             assert flow_gt is not None, \
                 "flow_gt must be provided in supervised mode"
@@ -169,7 +207,8 @@ class WarpingL2Loss(nn.Module):
             laplacian_loss = flow.new_zeros(())
             photo_loss = flow.new_zeros(())
             
-            total = sup_loss * self.sup_weight + smooth_loss * self.smooth_weight
+            total = (sup_loss * self.sup_weight + smooth_loss * self.smooth_weight
+                     + self.div_weight * div_loss)
 
         else: # unsupervised
             # Warp frameB toward frameA using the predicted flow.
@@ -183,7 +222,9 @@ class WarpingL2Loss(nn.Module):
 
             sup_loss = flow.new_zeros(())
 
-            total = photo_loss + self.smooth_weight * smooth_loss + self.laplacian_weight * laplacian_loss
+            total = (photo_loss + self.smooth_weight * smooth_loss 
+                     + self.laplacian_weight * laplacian_loss
+                     + self.div_weight * div_loss)
         
         return total, photo_loss, smooth_loss, laplacian_loss, sup_loss
 
@@ -209,7 +250,7 @@ def iterative_warping_loss(frameA, frameB, flow_predictions, criterion, flow_gt,
  
     Returns
     -------
-    total, photo, smooth, laplacian, sup : scalar tensors
+    total, photo, smooth, laplacian, sup, div : scalar tensors
         Weighted sums of each loss component, matching the return signature of
         WarpingL2Loss.forward() for a drop-in replacement in the training loop.
     """
@@ -222,12 +263,13 @@ def iterative_warping_loss(frameA, frameB, flow_predictions, criterion, flow_gt,
     smooth_acc   = torch.zeros(1, device=frameA.device)
     lap_acc      = torch.zeros(1, device=frameA.device)
     sup_acc      = torch.zeros(1, device=frameA.device)
+    div_acc      = torch.zeros(1, device=frameA.device)
  
     for i, flow in enumerate(flow_predictions):
         # Weight: earlier iterations get lower weight, last iteration gets 1.0
         weight = gamma ** (T - 1 - i)
  
-        loss, photo, smooth, lap, sup = criterion(
+        loss, photo, smooth, lap, sup, div = criterion(
             frameA, frameB, flow, flow_gt=flow_gt
         )
  
@@ -236,8 +278,10 @@ def iterative_warping_loss(frameA, frameB, flow_predictions, criterion, flow_gt,
         smooth_acc = smooth_acc + weight * smooth
         lap_acc    = lap_acc    + weight * lap
         sup_acc    = sup_acc    + weight * sup
+        div_acc    = div_acc    + weight * div
  
     # Return scalars (squeeze the dummy batch dim we used for in-place addition)
     return (total_acc.squeeze(), photo_acc.squeeze(),
-            smooth_acc.squeeze(), lap_acc.squeeze(), sup_acc.squeeze())
+            smooth_acc.squeeze(), lap_acc.squeeze(), 
+            sup_acc.squeeze(), div_acc.squeeze())
  

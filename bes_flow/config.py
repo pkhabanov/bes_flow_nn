@@ -62,7 +62,7 @@ class Config:
     is_supervised: bool = False
 
     # Total number of passes through the training data.
-    num_epochs: int = 25
+    num_epochs: int = 100
 
     # Number of frame pairs processed together in one forward/backward pass.
     batch_size: int = 32
@@ -77,6 +77,10 @@ class Config:
     smooth_weight: float = 0.002
     # laplacian, 2nd order derivative
     laplacian_weight: float = 0.005
+
+    # Divergence-free penalty weight (physics-informed term).
+    # Penalizes du/dx + dv/dy in the predicted flow.
+    div_weight: float = 0.01
 
     # Weight of the supervised MSE term
     sup_weight: float = 0.1
