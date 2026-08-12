@@ -48,6 +48,25 @@ class Config:
     # 4 sub-steps keep the per-step displacement <= ~2 px for max_shift=8.
     n_warp_steps: int = 4
 
+    # Compressive (curl-free) fraction of the synthetic flow's RMS kinetic
+    # energy. 0.0 = the flow is strictly divergence-free.
+    # Setting chi > 0 generates pairs with intensity sources and
+    # sinks (dataset.advect_image_continuity).
+    #
+    # CALIBRATION: drift-wave turbulence is only weakly compressible in the
+    # perpendicular plane. Pick chi so the induced per-frame intensity change
+    # matches the measured dI/I of the real signal. Measured on this pipeline
+    # at max_shift=12, flow_type='smooth' (use compression_diagnostics() to
+    # regenerate for other settings):
+    #
+    #     chi      rms dI/I     p99 dI/I    gain range
+    #   0.0005       1.6 %        4.2 %     0.94 - 1.05
+    #   0.001        2.1 %        5.6 %     0.94 - 1.07
+    #   0.002        3.3 %        8.0 %     0.91 - 1.10
+    #   0.005        5.0 %       13.8 %     0.83 - 1.16
+    #   0.02         9.9 %       25.7 %     0.78 - 1.49
+    compressible_fraction: float = 0.002
+
     # --- Model --------------------------------------------------------------
     # Number of channels in the shared CNN encoder output feature maps.
     feature_channels: int = 32
@@ -76,11 +95,26 @@ class Config:
     # total variation, 1st order derivative
     smooth_weight: float = 0.002
     # laplacian, 2nd order derivative
-    laplacian_weight: float = 0.005
+    laplacian_weight: float = 0.04
 
-    # Divergence-free penalty weight (physics-informed term).
-    # Penalizes du/dx + dv/dy in the predicted flow.
-    div_weight: float = 0.01
+    # Continuity-equation penalty weight (physics-informed term).
+    # Enforces  dI/dt + div(I*v) = 0  on the predicted flow.
+    #
+    # Physics: the MEAN poloidal ExB flow is divergence-free below the ion
+    # sound speed, but the drift-wave turbulence BES resolves is NOT -
+    # it is compressible, with real intensity sources and sinks. 
+    # The residual is O(intensity), i.e. the same scale as the photometric
+    # term, so this weight is naturally O(0.1-1) - much larger than
+    # smooth_weight/laplacian_weight, which penalise flow derivatives.
+    continuity_weight: float = 0.1
+ 
+    # Discretisation of the continuity residual:
+    #   'lagrangian' : DI/Dt + I*div(v), using the warped frame.
+    #                  Valid at LARGE displacement -- use this when
+    #                  max_shift >> 1 px (the default case here).
+    #   'eulerian'   : literal (I_B - I_A) + div(I*v) in conservative flux
+    #                  form. A linearisation, only accurate for |v| <~ 1 px.
+    continuity_form: str = 'lagrangian'
 
     # Weight of the supervised MSE term
     sup_weight: float = 0.1

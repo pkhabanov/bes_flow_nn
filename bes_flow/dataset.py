@@ -47,6 +47,85 @@ def curl_from_stream(psi):
     dpsi_dy = np.gradient(psi, axis=0)
     dpsi_dx = np.gradient(psi, axis=1)
     return np.stack([dpsi_dy, -dpsi_dx], axis=0).astype(np.float32)
+
+
+def grad_from_potential(phi):
+    """
+    Velocity field of a scalar velocity potential via central differences.
+ 
+    v = grad(phi) = (d(phi)/dx, d(phi)/dy)
+ 
+    This is the curl-free (dilatational / compressive) counterpart of
+    curl_from_stream. Its divergence is the Laplacian of phi, which is
+    generically nonzero -- these are the motions that create 
+    intensity sources and sinks.
+ 
+    Parameters
+    ----------
+    phi : (H, W) float array — velocity potential on the pixel grid
+ 
+    Returns
+    -------
+    flow : (2, H, W) float32 — channel 0 = dx, channel 1 = dy
+    """
+    dphi_dy = np.gradient(phi, axis=0)
+    dphi_dx = np.gradient(phi, axis=1)
+    return np.stack([dphi_dx, dphi_dy], axis=0).astype(np.float32)
+ 
+ 
+def _unit_rms(flow):
+    """Scale a (2, H, W) field so its RMS vector magnitude is 1."""
+    rms = np.sqrt((flow**2).sum(axis=0).mean()) + 1e-8
+    return flow / rms
+ 
+ 
+def add_compressible_component(flow_sol, compressible_fraction,
+                              smoothing_sigma=16.0):
+    """
+    Helmholtz mixing: combine a solenoidal field with a fresh curl-free
+    (dilatational) field so that a controlled fraction of the RMS kinetic
+    energy lives in the compressive part.
+ 
+        v = sqrt(1 - chi) * v_sol_hat  +  sqrt(chi) * v_pot_hat
+ 
+    with each component normalised to unit RMS magnitude first, so that
+    chi is the dilatational fraction of RMS energy.
+ 
+    chi = 0 reproduces the divergence-free case
+ 
+    Physics note
+    ------------
+    Drift-wave turbulence is only weakly compressible in the perpendicular
+    plane, so realistic chi is SMALL. Choose it by calibrating the induced
+    per-frame intensity change against the measured dI/I of the real
+    signal -- see compression_diagnostics(). Large chi produces
+    unphysically violent brightening/dimming.
+ 
+    Parameters
+    ----------
+    flow_sol              : (2, H, W) — solenoidal field from any of the
+                            existing generators
+    compressible_fraction : chi in [0, 1] — dilatational energy fraction
+    smoothing_sigma       : coherence length of the potential field (px);
+                            match the solenoidal generator's scale
+ 
+    Returns
+    -------
+    flow : (2, H, W) float32 — mixed field, NOT yet magnitude-normalised
+    """
+    chi = float(np.clip(compressible_fraction, 0.0, 1.0))
+    if chi <= 0.0:
+        return flow_sol.astype(np.float32)
+ 
+    _, H, W = flow_sol.shape
+    phi = gaussian_filter(
+        np.random.randn(H, W).astype(np.float32), sigma=smoothing_sigma
+    )
+    flow_pot = grad_from_potential(phi)
+ 
+    mixed = (np.sqrt(1.0 - chi) * _unit_rms(flow_sol)
+             + np.sqrt(chi) * _unit_rms(flow_pot))
+    return mixed.astype(np.float32)
  
  
 def normalize_flow(flow, max_shift, low=0.7):
@@ -226,7 +305,7 @@ def zonal_plus_turbulence_flow(H, W,
 #   
 def warp_image(image, flow):
     """
-    Warp a 2D image by a displacement field using cubic interpolation.
+    Warp a 2D image by a displacement field using bilinear interpolation.
 
     Parameters
     ----------
@@ -314,9 +393,9 @@ def advect_image(image, velocity, n_steps=4):
         x        = x - dt * vxm
         y        = y - dt * vym
  
-    # Single cubic interpolation of the image at the final foot points
+    # Single bilinear interpolation of the image at the final foot points
     warped = map_coordinates(
-        image, [y.ravel(), x.ravel()], order=3, mode='nearest',
+        image, [y.ravel(), x.ravel()], order=1, mode='nearest',
     ).reshape(H, W)
  
     return warped.astype(np.float32)
@@ -363,14 +442,161 @@ def integrate_forward_displacement(velocity, n_steps=4):
     return np.stack([x - x0, y - y0], axis=0).astype(np.float32)
 
 
-def _generate_flow(H, W, flow_type, max_shift):
+def _divergence_field(velocity):
+    """
+    div(v) = dvx/dx + dvy/dy on the pixel grid, via np.gradient
+    (central differences, one-sided at the edges).
+ 
+    Returns
+    -------
+    (H, W) float32
+    """
+    dvx_dx = np.gradient(velocity[0], axis=1)
+    dvy_dy = np.gradient(velocity[1], axis=0)
+    return (dvx_dx + dvy_dy).astype(np.float32)
+ 
+ 
+def _sample_scalar(field, y, x):
+    """Bilinearly sample a (H, W) scalar field at fractional (y, x)."""
+    return map_coordinates(field, [y.ravel(), x.ravel()],
+                           order=1, mode='nearest').reshape(y.shape)
+ 
+ 
+def advect_image_continuity(image, velocity, n_steps=4, max_log_gain=1.0):
+    """
+    Transport an image by the CONTINUITY equation
+ 
+        dI/dt + div(I * v) = 0
+ 
+    rather than by passive advection. This is the compressible
+    counterpart of advect_image().
+ 
+    Method
+    ------
+    Along a characteristic the continuity equation reduces to an ODE for
+    the intensity itself:
+ 
+        DI/Dt = -I * div(v)   =>   d(ln I)/dt = -div(v)
+ 
+    so, integrating from the foot point to the destination,
+ 
+        I_B(x) = I_A(x_foot) * exp( -Integral[ div(v) dt ] )
+ 
+    We therefore run the SAME backward semi-Lagrangian trace as
+    advect_image(), and additionally accumulate the divergence integral
+    along each trajectory using the RK2 midpoint positions (consistent
+    with the midpoint rule already used for the position update). One
+    cubic interpolation of the image at the final foot point, then a
+    pointwise multiplication by exp(-J).
+ 
+    Two useful properties:
+      * div(v) == 0  =>  J == 0  =>  identical to advect_image().
+      * exp(-J) > 0 always, so intensities stay strictly positive.
+ 
+    By Liouville's formula exp(J) is precisely det(grad Phi) along the
+    trajectory, so the frames produced here satisfy
+ 
+        I_B(x + D) * det(I + grad D) = I_A(x)
+ 
+    which is the residual minimised by
+    WarpingL2Loss.continuity_loss(form='lagrangian').
+ 
+    Parameters
+    ----------
+    image        : (H, W) float32 — frame A
+    velocity     : (2, H, W) float32 — steady velocity (px / unit time)
+    n_steps      : RK2 sub-steps (use the same value as the GT integrator)
+    max_log_gain : clamp on |J|. exp(1.0) ~ 2.7x brightening is already
+                   far beyond anything physical for a single BES frame
+                   interval; the clamp stops a pathological random draw
+                   from producing absurd intensities. Set None to disable.
+ 
+    Returns
+    -------
+    warped : (H, W) float32
+    """
+    H, W = image.shape
+    dt = 1.0 / n_steps
+ 
+    div_v = _divergence_field(velocity)
+ 
+    y, x = np.meshgrid(
+        np.arange(H, dtype=np.float32),
+        np.arange(W, dtype=np.float32),
+        indexing='ij'
+    )
+ 
+    # Accumulated Integral[ div(v) dt ] along each backward trajectory
+    log_jac = np.zeros((H, W), dtype=np.float32)
+ 
+    for _ in range(n_steps):
+        vx1, vy1 = _sample_velocity(velocity, y, x)
+        x_mid = x - 0.5 * dt * vx1
+        y_mid = y - 0.5 * dt * vy1
+        vxm, vym = _sample_velocity(velocity, y_mid, x_mid)
+ 
+        # Midpoint-rule contribution of this sub-step to the integral
+        log_jac += dt * _sample_scalar(div_v, y_mid, x_mid)
+ 
+        x = x - dt * vxm
+        y = y - dt * vym
+ 
+    if max_log_gain is not None:
+        log_jac = np.clip(log_jac, -max_log_gain, max_log_gain)
+ 
+    warped = map_coordinates(
+        image, [y.ravel(), x.ravel()], order=1, mode='nearest',
+    ).reshape(H, W)
+ 
+    return (warped * np.exp(-log_jac)).astype(np.float32)
+ 
+ 
+def compression_diagnostics(H, W, flow_type, max_shift,
+                            compressible_fraction, n_warp_steps=4,
+                            n_samples=200):
+    """
+    Report the intensity-change statistics implied by a given
+    compressible_fraction, so it can be calibrated against the measured
+    dI/I of real BES data.
+ 
+    The quantity of interest is the compression gain g = exp(-J):
+    g = 1 means no compression, g = 1.1 means a 10% brightening of that
+    fluid element over one frame interval.
+ 
+    Returns
+    -------
+    dict with RMS and percentile statistics of (g - 1), in percent.
+    """
+    rel = []
+    for _ in range(n_samples):
+        v = _generate_flow(H, W, flow_type, max_shift,
+                           compressible_fraction=compressible_fraction)
+        div_v = _divergence_field(v)
+        # single-shot estimate of J ~ div(v) * unit time
+        rel.append(np.abs(np.expm1(-div_v)))
+    rel = np.concatenate([r.ravel() for r in rel])
+    return {
+        'rms_percent': float(100 * np.sqrt((rel**2).mean())),
+        'p50_percent': float(100 * np.percentile(rel, 50)),
+        'p99_percent': float(100 * np.percentile(rel, 99)),
+        'max_percent': float(100 * rel.max()),
+    }
+
+ 
+def _generate_flow(H, W, flow_type, max_shift, compressible_fraction=0.0):
     """
     Dispatch to the selected flow generator.
+ 
+    compressible_fraction (chi) adds a curl-free component carrying chi
+    of the RMS kinetic energy. chi = 0 (default) reproduces the original
+    strictly divergence-free behaviour. The mix is applied BEFORE the
+    final magnitude normalisation so that max_shift still means what it
+    says.
     """
     if flow_type == 'smooth':
-        return random_smooth_flow(H, W, max_shift)
+        flow = random_smooth_flow(H, W, max_shift)
     elif flow_type == 'modes':
-        return sinusoidal_modes(H, W, max_shift=max_shift)
+        flow = sinusoidal_modes(H, W, max_shift=max_shift)
     elif flow_type == 'zonal':
         flow, _, _ = zonal_plus_turbulence_flow(
             H, W,
@@ -378,7 +604,6 @@ def _generate_flow(H, W, flow_type, max_shift):
             turbulence_amplitude = max_shift * 0.3,
             profile_type         = 'sin',
         )
-        return flow
     elif flow_type == 'well':
         flow, _, _ = zonal_plus_turbulence_flow(
             H, W,
@@ -386,23 +611,31 @@ def _generate_flow(H, W, flow_type, max_shift):
             turbulence_amplitude = max_shift * 0.3,
             profile_type         = 'well',
         )
-        return flow
     else:
         raise ValueError(
             f"Unknown flow_type '{flow_type}'. "
             f"Choose from: 'smooth', 'modes', 'zonal', 'well'."
         )
+ 
+    if compressible_fraction > 0.0:
+        flow = add_compressible_component(flow, compressible_fraction)
+        # Re-normalise: the Helmholtz mix used unit-RMS components, so the
+        # peak magnitude must be restored to the requested max_shift.
+        flow = normalize_flow(flow, max_shift)
+ 
+    return flow
     
 
 def generate_dataset(frames, n_pairs_per_frame, max_shift,
-                    noise_std, flow_type, n_warp_steps):
+                    noise_std, flow_type, n_warp_steps,
+                    compressible_fraction=0.0):
     """
     Generate the full synthetic dataset once and return numpy arrays.
-
+ 
     Each real frame is used to produce n_pairs_per_frame synthetic pairs
     with independent random flow fields, giving a total of
     N * n_pairs_per_frame training examples.
-
+ 
     Parameters
     ----------
     frames            : (N, H, W) float array — real BES frames
@@ -417,7 +650,7 @@ def generate_dataset(frames, n_pairs_per_frame, max_shift,
                              velocity field; frame B is produced by
                              multi-step advection and flow_gt is the
                              consistently integrated forward displacement.
-
+ 
     Returns
     -------
     framesA  : (N*n_pairs, 1, H, W) float32
@@ -426,52 +659,68 @@ def generate_dataset(frames, n_pairs_per_frame, max_shift,
     """
     N, H, W  = frames.shape
     n_total  = N * n_pairs_per_frame
-
+ 
     framesA  = np.zeros((n_total, 1, H, W), dtype=np.float32)
     framesB  = np.zeros((n_total, 1, H, W), dtype=np.float32)
     flows_gt = np.zeros((n_total, 2, H, W), dtype=np.float32)
-
+ 
     print(f"  Generating {n_total} pairs "
           f"({N} frames x {n_pairs_per_frame} pairs, "
           f"flow='{flow_type}', warp_steps={n_warp_steps})...")
-
+ 
     idx = 0
     for i, frame in enumerate(frames):
         image = frame.astype(np.float32)
         # normalize each image
         image = (image - image.min()) / (image.max() - image.min() + 1e-8)
-
+ 
         for _ in range(n_pairs_per_frame):
-            velocity = _generate_flow(H, W, flow_type, max_shift)
+            velocity = _generate_flow(H, W, flow_type, max_shift,
+                                      compressible_fraction=compressible_fraction)
             if n_warp_steps <= 1:
-                # Legacy single-step warp
+                # Legacy single-step warp.
+                # NOTE: this path is only self-consistent for a spatially
+                # UNIFORM flow -- it sets flow = velocity and warps once,
+                # so frameA(x) = frameB(x + D(x)) holds only where
+                # v(x + v) == v(x). Prefer n_warp_steps >= 2.
                 flow   = velocity
                 warped = warp_image(image, velocity)
+            elif compressible_fraction > 0.0:
+                # Compressible: transport intensity by the continuity
+                # equation so the pair actually contains sources/sinks.
+                flow   = integrate_forward_displacement(velocity, n_warp_steps)
+                warped = advect_image_continuity(image, velocity, n_warp_steps)
             else:
-                # Multi-step semi-Lagrangian advection with consistent GT
+                # Incompressible: passive advection
                 flow   = integrate_forward_displacement(velocity, n_warp_steps)
                 warped = advect_image(image, velocity, n_warp_steps)
-
+ 
             if noise_std > 0:
+                # With compressible transport the warped frame legitimately
+                # exceeds the [0, 1] range of frame A (that IS the signal),
+                # so only non-negativity is enforced on it. Clipping to 1.0
+                # would silently destroy the compression the
+                # continuity loss is meant to learn from.
+                hi_B = 1.0 if compressible_fraction <= 0.0 else None
                 framesA[idx, 0] = (image  + np.random.normal(0, noise_std, (H, W))
                                    ).clip(0.0, 1.0)
                 framesB[idx, 0] = (warped + np.random.normal(0, noise_std, (H, W))
-                                   ).clip(0.0, 1.0)
+                                   ).clip(0.0, hi_B)
             else:
                 framesA[idx, 0] = image
                 framesB[idx, 0] = warped
-
+ 
             flows_gt[idx, :, :, :] = flow
             idx += 1
-
+ 
         if (i + 1) % max(1, N // 5) == 0:
             print(f"    {i+1}/{N} frames created  ({idx} pairs)")
-
+ 
     mem_mb = (framesA.nbytes + framesB.nbytes + flows_gt.nbytes) / 1e6
     print(f"  Done — {n_total} pairs, ~{mem_mb:.1f} MB in memory")
     return framesA, framesB, flows_gt
-
-
+ 
+ 
 def _make_metadata(cfg):
     """
     Build a dict of the settings that determine dataset content.
@@ -488,9 +737,12 @@ def _make_metadata(cfg):
         'val_seed'         : int(cfg.val_seed),
         'test_seed'        : int(cfg.test_seed),
         'n_warp_steps'     : int(cfg.n_warp_steps),
+        # Included so that switching the compressible arm on/off
+        # invalidates any cached incompressible dataset.
+        'compressible_fraction': float(getattr(cfg, 'compressible_fraction', 0.0)),
     }
-
-
+ 
+ 
 def save_dataset_cache(path, 
                        train_A, train_B, train_flows,
                        val_A, val_B, val_flows, 
@@ -498,7 +750,7 @@ def save_dataset_cache(path,
                        metadata):
     """
     Save pre-generated arrays and metadata to an HDF5 file.
-
+ 
     Parameters
     ----------
     path            : str  -- file path, e.g. 'data/cache/dataset_zonal.h5'
@@ -510,7 +762,7 @@ def save_dataset_cache(path,
     dirpath = os.path.dirname(path)
     if dirpath:
         os.makedirs(dirpath, exist_ok=True)
-
+ 
     with h5py.File(path, 'w') as f:
         for grp_name, A, B, flows in (
             ('train', train_A, train_B, train_flows),
@@ -521,24 +773,24 @@ def save_dataset_cache(path,
             grp.create_dataset('framesA',  data=A,     compression='gzip', compression_opts=4)
             grp.create_dataset('framesB',  data=B,     compression='gzip', compression_opts=4)
             grp.create_dataset('flows_gt', data=flows, compression='gzip', compression_opts=4)
-
+ 
         # Metadata as typed HDF5 attributes on a dedicated group
         meta_grp = f.create_group('metadata')
         for key, value in metadata.items():
             meta_grp.attrs[key] = value
-
+ 
     size_mb = os.path.getsize(path) / 1e6
     print(f"  Cache saved -> {path}  ({size_mb:.1f} MB on disk)")
-
-
+ 
+ 
 def load_dataset_cache(path):
     """
     Load pre-generated arrays from an HDF5 cache file.
-
+ 
     Parameters
     ----------
     path : str -- path to .h5 cache file
-
+ 
     Returns
     -------
     train_A, train_B, train_flows : training arrays
@@ -556,7 +808,7 @@ def load_dataset_cache(path):
         test_A      = f['test/framesA'][:]
         test_B      = f['test/framesB'][:]
         test_flows  = f['test/flows_gt'][:]
-
+ 
         # Read attributes back into a Python dict.
         metadata = {}
         for key, value in f['metadata'].attrs.items():
@@ -564,24 +816,24 @@ def load_dataset_cache(path):
                 metadata[key] = value.item()   # numpy scalar -> Python int/float
             else:
                 metadata[key] = value          # strings pass through unchanged
-
+ 
     return (train_A, train_B, train_flows,
             val_A,   val_B,   val_flows,
             test_A,  test_B,  test_flows,
             metadata)
-
-
+ 
+ 
 def _cache_is_valid(path, cfg):
     """
     Check whether a cache file exists AND was generated with the same
     settings as the current cfg.
     Reads only the /metadata attributes.
-
+ 
     Returns
     -------
     (is_valid : bool, reason : str)
         reason is logged by make_dataloaders so the user always knows
-        exactly why a cache was rejected or accepted.
+        why a cache was rejected or accepted.
     """
     if not os.path.exists(path):
         return False, "Cache file not found"
@@ -598,9 +850,9 @@ def _cache_is_valid(path, cfg):
             }
     except Exception as e:
         return False, f"Cache file unreadable: {e}"
-
+ 
     current = _make_metadata(cfg)
-
+ 
     # Compare each field individually
     for key, current_val in current.items():
         cached_val = metadata.get(key)
@@ -609,9 +861,9 @@ def _cache_is_valid(path, cfg):
                 f"'{key}' mismatch: cached={cached_val!r}, "
                 f"current={current_val!r}"
             )
-
+ 
     return True, "ok"
-    
+
 
 class BESDataset(Dataset):
     """
@@ -850,6 +1102,7 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
         noise_std         = cfg.noise_std,
         flow_type         = cfg.flow_type,
         n_warp_steps      = cfg.n_warp_steps,
+        compressible_fraction = getattr(cfg, 'compressible_fraction', 0.0),
     )
 
     # Validation set - fixed val_seed 
@@ -864,6 +1117,7 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
         noise_std         = cfg.noise_std,
         flow_type         = cfg.flow_type,
         n_warp_steps      = cfg.n_warp_steps,
+        compressible_fraction = getattr(cfg, 'compressible_fraction', 0.0),
     )
 
     np.random.set_state(rng_state)  # restore random state
@@ -886,6 +1140,7 @@ def _generate_all(train_frames, val_frames, test_frames, cfg):
             noise_std         = cfg.noise_std,
             flow_type         = cfg.flow_type,
             n_warp_steps      = cfg.n_warp_steps,
+            compressible_fraction = getattr(cfg, 'compressible_fraction', 0.0),
         )
         np.random.set_state(rng_state)
 
