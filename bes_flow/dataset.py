@@ -255,7 +255,7 @@ def warp_image(image, flow):
     warped = map_coordinates(
         image,
         [src_y.ravel(), src_x.ravel()],
-        order=3,
+        order=1,
         mode='nearest',
     ).reshape(H, W)
 
@@ -906,7 +906,7 @@ if __name__ == "__main__":
         test_split         : float = 0.1
         max_shift          : float = 12.0
         noise_std          : float = 0.02
-        flow_type          : str   = 'mixed'
+        flow_type          : str   = 'modes'
         batch_size         : int   = 4
         num_workers        : int   = 0
         n_pairs_per_frame  : int   = 1
