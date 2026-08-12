@@ -75,10 +75,13 @@ class WarpingL2Loss(nn.Module):
         grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)
 
         # Convert flow from pixel units to normalized [-1, 1] units.
-        # For the x direction the displacement of W/2 pixels is 1.0 in normalized coords.
+        # With align_corners=True, -1 and +1 map to the CENTRES of the first
+        # and last pixels, so the coordinate span from pixel 0 to pixel W-1
+        # is 2 units and therefore
+        #       1 pixel  =  2 / (W - 1)   normalized units.
         flow_norm = torch.stack([
-            flow[:, 0, :, :] / (W / 2),   # dx normalised
-            flow[:, 1, :, :] / (H / 2),   # dy normalised
+            flow[:, 0, :, :] * 2.0 / max(W - 1, 1),   # dx normalised
+            flow[:, 1, :, :] * 2.0 / max(H - 1, 1),   # dy normalised
         ], dim=1)
         # Rearrange flow to (B, H, W, 2) as required by grid_sample
         flow_norm = flow_norm.permute(0, 2, 3, 1)
