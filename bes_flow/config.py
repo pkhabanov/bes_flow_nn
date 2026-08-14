@@ -48,24 +48,34 @@ class Config:
     # 4 sub-steps keep the per-step displacement <= ~2 px for max_shift=8.
     n_warp_steps: int = 4
 
-    # Compressive (curl-free) fraction of the synthetic flow's RMS kinetic
-    # energy. 0.0 = the flow is strictly divergence-free.
-    # Setting chi > 0 generates pairs with intensity sources and
+    # Compressible (curl-free) fraction of the TURBULENT component's RMS
+    # kinetic energy. 0.0 = the original strictly divergence-free data.
+    #
+    # Applied to the turbulent component only (dataset.make_turbulence_-
+    # compressible): the mean zonal flow stays divergence-free,
+    # matching the physics that mean poloidal ExB is incompressible below
+    # the ion sound speed while the drift-wave turbulence on top is not.
+    #
+    # WHY THIS EXISTS: with chi = 0 the synthetic flows are volume-preserving
+    # and intensity is transported passively, so brightness constancy holds
+    # and the continuity residual collapses onto the photometric residual. 
+    # Setting chi > 0 generates pairs with genuine intensity sources and
     # sinks (dataset.advect_image_continuity).
     #
-    # CALIBRATION: drift-wave turbulence is only weakly compressible in the
-    # perpendicular plane. Pick chi so the induced per-frame intensity change
-    # matches the measured dI/I of the real signal. Measured on this pipeline
-    # at max_shift=12, flow_type='smooth' (use compression_diagnostics() to
-    # regenerate for other settings):
+    # CALIBRATION: pick chi so the induced per-frame intensity change matches
+    # the measured dI/I of the real signal. Measured at max_shift=12,
+    # n_warp_steps=4 (regenerate with compression_diagnostics() if those
+    # change). Note chi is an energy fraction OF THE TURBULENCE, so the
+    # absolute dI/I differs between flow types because their turbulence
+    # amplitudes differ:
     #
-    #     chi      rms dI/I     p99 dI/I    gain range
-    #   0.0005       1.6 %        4.2 %     0.94 - 1.05
-    #   0.001        2.1 %        5.6 %     0.94 - 1.07
-    #   0.002        3.3 %        8.0 %     0.91 - 1.10
-    #   0.005        5.0 %       13.8 %     0.83 - 1.16
-    #   0.02         9.9 %       25.7 %     0.78 - 1.49
-    compressible_fraction: float = 0.002
+    #     chi      smooth        zonal        well      (rms dI/I)
+    #   0.002       2.8 %        1.4 %       1.1 %
+    #   0.005       5.4 %        2.0 %       1.8 %
+    #   0.010       7.7 %        3.0 %       2.8 %
+    #   0.020       8.3 %        4.2 %       3.9 %
+    #   0.050      16.1 %        6.0 %       5.9 %
+    compressible_fraction: float = 0.02
 
     # --- Model --------------------------------------------------------------
     # Number of channels in the shared CNN encoder output feature maps.

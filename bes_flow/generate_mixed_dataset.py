@@ -22,9 +22,11 @@ from bes_flow.train import resolve_cache_path
 
 # The four flow types that make up the mixed dataset
 FLOW_TYPES = ['smooth', 'modes', 'well', 'zonal']
- 
+
+
 def _generate_pairs(frames, flow_types, n_pairs_per_frame,
-                    max_shift, noise_std, n_warp_steps, seed=None):
+                    max_shift, noise_std, n_warp_steps, 
+                    compressible_fraction, seed=None):
     """
     Generate frame pairs and corresponding flows 
     for every flow type, concatenate, and shuffle.
@@ -62,6 +64,7 @@ def _generate_pairs(frames, flow_types, n_pairs_per_frame,
             noise_std=noise_std,
             flow_type=flow_type,
             n_warp_steps=n_warp_steps,
+            compressible_fraction=compressible_fraction,
         )
         all_A.append(fA)
         all_B.append(fB)
@@ -85,6 +88,7 @@ def generate_mixed_dataset(data_path, output_path,
                             val_split, test_split,
                             n_pairs_per_frame, max_shift, noise_std,
                             val_seed, test_seed, n_warp_steps,
+                            compressible_fraction=0.0,
                             flow_types=FLOW_TYPES):
     """
     Full pipeline: load raw frames -> generate mixed dataset -> save HDF5.
@@ -137,6 +141,7 @@ def generate_mixed_dataset(data_path, output_path,
         max_shift=max_shift,
         noise_std=noise_std,
         n_warp_steps=n_warp_steps,
+        compressible_fraction=compressible_fraction,
         seed=None,   # fresh random state each run
     )
     print(f"  Total training pairs: {len(train_A)}  "
@@ -149,6 +154,7 @@ def generate_mixed_dataset(data_path, output_path,
         max_shift=max_shift,
         noise_std=noise_std,
         n_warp_steps=n_warp_steps,
+        compressible_fraction=compressible_fraction,
         seed=val_seed,
     )
     print(f"  Total validation pairs: {len(val_A)}")
@@ -160,6 +166,7 @@ def generate_mixed_dataset(data_path, output_path,
         max_shift=max_shift,
         noise_std=noise_std,
         n_warp_steps=n_warp_steps,
+        compressible_fraction=compressible_fraction,
         seed=test_seed,
     )
     print(f"  Total test pairs: {len(test_A)}")
@@ -178,6 +185,7 @@ def generate_mixed_dataset(data_path, output_path,
         'val_seed'         : int(val_seed),
         'test_seed'        : int(test_seed),
         'n_warp_steps'     : int(n_warp_steps),
+        'compressible_fraction': float(compressible_fraction),
     }
  
     print(f"\nSaving mixed dataset")
@@ -245,5 +253,6 @@ if __name__ == "__main__":
         val_seed          = cfg.val_seed,
         test_seed         = cfg.test_seed,
         n_warp_steps      = cfg.n_warp_steps,
+        compressible_fraction = getattr(cfg, 'compressible_fraction', 0.0),
         flow_types        = args.flow_types,
     )

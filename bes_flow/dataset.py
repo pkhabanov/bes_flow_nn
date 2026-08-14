@@ -79,53 +79,61 @@ def _unit_rms(flow):
     return flow / rms
  
  
-def add_compressible_component(flow_sol, compressible_fraction,
-                              smoothing_sigma=16.0):
+def make_turbulence_compressible(flow_turb, compressible_fraction,
+                                 smoothing_sigma=16.0):
     """
-    Helmholtz mixing: combine a solenoidal field with a fresh curl-free
-    (dilatational) field so that a controlled fraction of the RMS kinetic
-    energy lives in the compressive part.
+    Replace a solenoidal TURBULENT component with a mixed
+    solenoidal + compressible one of the same RMS magnitude.
  
-        v = sqrt(1 - chi) * v_sol_hat  +  sqrt(chi) * v_pot_hat
+        v_turb' = |v_turb|_rms * ( sqrt(1-chi) * v_turb_hat
+                                 + sqrt(chi)   * grad(phi)_hat )
  
-    with each component normalised to unit RMS magnitude first, so that
-    chi is the dilatational fraction of RMS energy.
+    The mean poloidal ExB flow is divergence-free below the ion sound
+    speed; it is the drift-wave turbulence riding on top of it that is
+    compressible. Attaching chi to the turbulence makes it a single
+    consistent physical knob across all four generators.
  
-    chi = 0 reproduces the divergence-free case
+    Preserving the turbulent RMS also means the total flow's amplitude
+    statistics are unchanged by chi, so no global renormalisation is
+    needed - switching chi on does not perturb max_shift or the random
+    zonal-amplitude draw.
  
-    Physics note
-    ------------
-    Drift-wave turbulence is only weakly compressible in the perpendicular
-    plane, so realistic chi is SMALL. Choose it by calibrating the induced
-    per-frame intensity change against the measured dI/I of the real
-    signal -- see compression_diagnostics(). Large chi produces
-    unphysically violent brightening/dimming.
+    NOTE Drift-wave turbulence is predominantly solenoidal (ExB
+    dominant) with only a weak compressible correction.
  
     Parameters
     ----------
-    flow_sol              : (2, H, W) — solenoidal field from any of the
-                            existing generators
-    compressible_fraction : chi in [0, 1] — dilatational energy fraction
-    smoothing_sigma       : coherence length of the potential field (px);
-                            match the solenoidal generator's scale
+    flow_turb             : (2, H, W) — solenoidal turbulent component
+    compressible_fraction : chi in [0, 1] — dilatational fraction of the
+                            TURBULENT energy
+    smoothing_sigma       : coherence length of the potential field (px).
+                            Should MATCH the generator that produced
+                            flow_turb so the two components live 
+                            at the same scale.
  
     Returns
     -------
-    flow : (2, H, W) float32 — mixed field, NOT yet magnitude-normalised
+    (2, H, W) float32 — same RMS magnitude as the input
     """
     chi = float(np.clip(compressible_fraction, 0.0, 1.0))
     if chi <= 0.0:
-        return flow_sol.astype(np.float32)
+        return flow_turb.astype(np.float32)
  
-    _, H, W = flow_sol.shape
+    _, H, W = flow_turb.shape
+    rms_in = np.sqrt((flow_turb**2).sum(axis=0).mean()) + 1e-8
+ 
     phi = gaussian_filter(
         np.random.randn(H, W).astype(np.float32), sigma=smoothing_sigma
     )
     flow_pot = grad_from_potential(phi)
  
-    mixed = (np.sqrt(1.0 - chi) * _unit_rms(flow_sol)
+    mixed = (np.sqrt(1.0 - chi) * _unit_rms(flow_turb)
              + np.sqrt(chi) * _unit_rms(flow_pot))
-    return mixed.astype(np.float32)
+ 
+    # Restore the original turbulent RMS so total flow amplitude is
+    # unaffected by chi.
+    return (mixed * (rms_in / (np.sqrt((mixed**2).sum(axis=0).mean()) + 1e-8))
+            ).astype(np.float32)
  
  
 def normalize_flow(flow, max_shift, low=0.7):
@@ -142,7 +150,7 @@ def normalize_flow(flow, max_shift, low=0.7):
     return (flow * scale).astype(np.float32)
 
 
-def random_smooth_flow(H, W, max_shift=6.0, smoothing_sigma=8.0):
+def random_smooth_flow(H, W, max_shift=6.0, smoothing_sigma=16.0):
     """
     Generate a smooth random divergence-free displacement field from a
     Gaussian-random-field stream function.
@@ -226,7 +234,7 @@ def sinusoidal_modes(H, W, n_modes=8, max_shift=6.0):
 def zonal_plus_turbulence_flow(H, W,
                                zonal_amplitude=4.0,
                                turbulence_amplitude=2.0,
-                               turbulence_sigma=6.0,
+                               turbulence_sigma=16.0,
                                profile_type='well',
                                well_pos=0.5,
                                well_width=0.125,):
@@ -330,7 +338,7 @@ def warp_image(image, flow):
     src_y = y_coords - flow[1]   # flow[1] = dy
     src_x = x_coords - flow[0]   # flow[0] = dx
 
-    # Cubic interpolation (order=3)
+    # Bilinear interpolation (order=1)
     warped = map_coordinates(
         image,
         [src_y.ravel(), src_x.ravel()],
@@ -587,29 +595,24 @@ def _generate_flow(H, W, flow_type, max_shift, compressible_fraction=0.0):
     """
     Dispatch to the selected flow generator.
  
-    compressible_fraction (chi) adds a curl-free component carrying chi
-    of the RMS kinetic energy. chi = 0 (default) reproduces the original
-    strictly divergence-free behaviour. The mix is applied BEFORE the
-    final magnitude normalisation so that max_shift still means what it
-    says.
+    compressible_fraction (chi) makes the TURBULENT component partially
+    compressible, carrying chi of the turbulent kinetic energy. The mean
+    (zonal) component is left divergence-free.
     """
+ 
     if flow_type == 'smooth':
-        flow = random_smooth_flow(H, W, max_shift)
+        # No mean component: the whole field is turbulence.
+        flow_mean = 0.0
+        flow_turb = random_smooth_flow(H, W, max_shift)
     elif flow_type == 'modes':
-        flow = sinusoidal_modes(H, W, max_shift=max_shift)
-    elif flow_type == 'zonal':
-        flow, _, _ = zonal_plus_turbulence_flow(
+        flow_mean = 0.0
+        flow_turb = sinusoidal_modes(H, W, max_shift=max_shift)
+    elif flow_type in ('zonal', 'well'):
+        _, flow_mean, flow_turb = zonal_plus_turbulence_flow(
             H, W,
             zonal_amplitude      = max_shift,
             turbulence_amplitude = max_shift * 0.3,
-            profile_type         = 'sin',
-        )
-    elif flow_type == 'well':
-        flow, _, _ = zonal_plus_turbulence_flow(
-            H, W,
-            zonal_amplitude      = max_shift,
-            turbulence_amplitude = max_shift * 0.3,
-            profile_type         = 'well',
+            profile_type         = 'sin' if flow_type == 'zonal' else 'well',
         )
     else:
         raise ValueError(
@@ -618,12 +621,11 @@ def _generate_flow(H, W, flow_type, max_shift, compressible_fraction=0.0):
         )
  
     if compressible_fraction > 0.0:
-        flow = add_compressible_component(flow, compressible_fraction)
-        # Re-normalise: the Helmholtz mix used unit-RMS components, so the
-        # peak magnitude must be restored to the requested max_shift.
-        flow = normalize_flow(flow, max_shift)
+        flow_turb = make_turbulence_compressible(
+            flow_turb, compressible_fraction,
+        )
  
-    return flow
+    return (flow_mean + flow_turb).astype(np.float32)
     
 
 def generate_dataset(frames, n_pairs_per_frame, max_shift,
@@ -1160,7 +1162,7 @@ if __name__ == "__main__":
         val_split          : float = 0.1
         test_split         : float = 0.1
         max_shift          : float = 12.0
-        noise_std          : float = 0.02
+        noise_std          : float = 0.0
         flow_type          : str   = 'modes'
         batch_size         : int   = 4
         num_workers        : int   = 0
@@ -1168,6 +1170,7 @@ if __name__ == "__main__":
         val_seed           : int   = 0
         test_seed          : int   = 42
         n_warp_steps       : int   = 4
+        compressible_fraction: float = 0.02
         # Set to None to skip saving
         dataset_cache_path : str   = 'synthetic_data/test_dataset.h5'
 
